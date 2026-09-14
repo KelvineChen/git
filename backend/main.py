@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from ai_service import parse_user_profile
+from ai_service import parse_project_requirement, parse_user_profile
 
 app = FastAPI()
 
@@ -20,6 +20,15 @@ class ProfileRequest(BaseModel):
 def parse_profile(request: ProfileRequest):
     try:
         result = parse_user_profile(request.raw_text)
+        return {"success": True, "data": result}
+    except Exception:
+        return {"success": False, "message": "解析失败，请重试"}
+
+
+@app.post("/api/parse_project")
+def parse_project(request: ProfileRequest):
+    try:
+        result = parse_project_requirement(request.raw_text)
         return {"success": True, "data": result}
     except Exception:
         return {"success": False, "message": "解析失败，请重试"}
