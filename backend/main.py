@@ -1,7 +1,10 @@
 import re
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from pydantic import BaseModel
+from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from ai_service import (
     judge_experience_relevance,
@@ -10,8 +13,21 @@ from ai_service import (
     parse_project_requirement,
     parse_user_profile,
 )
+from database import (
+    Project,
+    ProjectProfile,
+    User,
+    UserProfile,
+    get_db,
+    init_db,
+)
 
 app = FastAPI()
+
+
+@app.on_event("startup")
+def startup_event() -> None:
+    init_db()
 
 @app.get("/")
 def root():
@@ -28,6 +44,195 @@ class ProfileRequest(BaseModel):
 class MatchRequest(BaseModel):
     user_profile: dict
     project_profile: dict
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    email: str
+    school: str = ""
+    major: str = ""
+    grade: str = ""
+
+
+class LoginRequest(BaseModel):
+    email: str
+
+
+class SaveProfileRequest(BaseModel):
+    user_id: int
+    raw_text: str
+    parsed_data: dict
+
+
+class CreateProjectRequest(BaseModel):
+    owner_id: int
+    name: str
+    raw_text: str
+    parsed_data: dict
+    scope: str = "same_school"
+
+
+@app.post("/api/register")
+def register(request: RegisterRequest, db: Session = Depends(get_db)):
+    existing_user = db.scalar(
+        select(User).where(
+            or_(User.username == request.username, User.email == request.email)
+        )
+    )
+    if existing_user:
+        return {"success": False, "message": "用户名或邮箱已存在"}
+
+    user = User(
+        username=request.username,
+        email=request.email,
+        school=request.school,
+        major=request.major,
+        grade=request.grade,
+    )
+    try:
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    except IntegrityError:
+        db.rollback()
+        return {"success": False, "message": "用户名或邮箱已存在"}
+
+    return {
+        "success": True,
+        "user_id": user.id,
+        "username": user.username,
+    }
+
+
+@app.post("/api/login")
+def login(request: LoginRequest, db: Session = Depends(get_db)):
+    user = db.scalar(select(User).where(User.email == request.email))
+    if not user:
+        return {"success": False, "message": "用户不存在"}
+
+    return {
+        "success": True,
+        "user_id": user.id,
+        "username": user.username,
+        "school": user.school,
+    }
+
+
+@app.post("/api/save_profile")
+def save_profile(request: SaveProfileRequest, db: Session = Depends(get_db)):
+    if db.get(User, request.user_id) is None:
+        return {"success": False, "message": "用户不存在"}
+
+    profile = db.scalar(
+        select(UserProfile).where(UserProfile.user_id == request.user_id)
+    )
+    data = request.parsed_data
+    values = {
+        "raw_text": request.raw_text,
+        "skills": data.get("skills", []),
+        "skill_levels": data.get("skill_levels", {}),
+        "experience": data.get("experience", []),
+        "interests": data.get("interests", []),
+        "preference": data.get("preference", ""),
+        "time_commitment": data.get("time_commitment", "未知"),
+    }
+
+    if profile:
+        for field, value in values.items():
+            setattr(profile, field, value)
+    else:
+        profile = UserProfile(user_id=request.user_id, **values)
+        db.add(profile)
+
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        return {"success": False, "message": "画像保存失败"}
+
+    return {"success": True}
+
+
+@app.post("/api/create_project")
+def create_project(request: CreateProjectRequest, db: Session = Depends(get_db)):
+    if db.get(User, request.owner_id) is None:
+        return {"success": False, "message": "用户不存在"}
+
+    data = request.parsed_data
+    project = Project(
+        owner_id=request.owner_id,
+        name=request.name,
+        raw_text=request.raw_text,
+        scope=request.scope,
+    )
+
+    try:
+        db.add(project)
+        db.flush()
+        db.add(
+            ProjectProfile(
+                project_id=project.id,
+                required_skills=data.get("required_skills", []),
+                time_requirement=data.get("time_requirement", "未知"),
+                priority=data.get("priority", []),
+                project_type=data.get("project_type", ""),
+                background=data.get("background", ""),
+            )
+        )
+        db.commit()
+        db.refresh(project)
+    except SQLAlchemyError:
+        db.rollback()
+        return {"success": False, "message": "项目创建失败"}
+
+    return {"success": True, "project_id": project.id}
+
+
+@app.get("/api/profile/{user_id}")
+def get_profile(user_id: int, db: Session = Depends(get_db)):
+    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
+    if not profile:
+        return {"success": False, "message": "画像不存在"}
+
+    return {
+        "success": True,
+        "user_id": profile.user_id,
+        "raw_text": profile.raw_text,
+        "skills": profile.skills,
+        "skill_levels": profile.skill_levels,
+        "experience": profile.experience,
+        "interests": profile.interests,
+        "preference": profile.preference,
+        "time_commitment": profile.time_commitment,
+        "updated_at": profile.updated_at,
+    }
+
+
+@app.get("/api/project/{project_id}")
+def get_project(project_id: int, db: Session = Depends(get_db)):
+    project = db.get(Project, project_id)
+    if not project:
+        return {"success": False, "message": "项目不存在"}
+
+    profile = db.scalar(
+        select(ProjectProfile).where(ProjectProfile.project_id == project_id)
+    )
+    return {
+        "success": True,
+        "project_id": project.id,
+        "owner_id": project.owner_id,
+        "name": project.name,
+        "raw_text": project.raw_text,
+        "status": project.status,
+        "scope": project.scope,
+        "created_at": project.created_at,
+        "required_skills": profile.required_skills if profile else [],
+        "time_requirement": profile.time_requirement if profile else "未知",
+        "priority": profile.priority if profile else [],
+        "project_type": profile.project_type if profile else "",
+        "background": profile.background if profile else "",
+        "updated_at": profile.updated_at if profile else None,
+    }
 
 @app.post("/api/parse_profile")
 def parse_profile(request: ProfileRequest):

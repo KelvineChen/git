@@ -1,4 +1,5 @@
 import json
+import re
 
 import requests
 import streamlit as st
@@ -7,158 +8,335 @@ import streamlit as st
 BACKEND_URL = "http://localhost:8000"
 
 
-def call_api(path: str, payload: dict) -> dict | None:
+def post_api(path: str, payload: dict) -> dict | None:
+    """Call a backend POST endpoint and show user-friendly errors."""
     try:
-        response = requests.post(f"{BACKEND_URL}{path}", json=payload, timeout=60)
+        response = requests.post(
+            f"{BACKEND_URL}{path}",
+            json=payload,
+            timeout=60,
+        )
         response.raise_for_status()
         result = response.json()
-        if not result.get("success"):
-            st.error(result.get("message", "接口调用失败，请重试"))
-            return None
-        return result.get("data", result)
     except requests.RequestException:
         st.error("无法连接后端，请确认后端服务已启动")
+        return None
     except ValueError:
         st.error("后端返回的数据格式不正确")
-    return None
+        return None
+
+    if not result.get("success"):
+        st.error(result.get("message", "操作失败，请重试"))
+        return None
+    return result
 
 
-def show_tags(title: str, values: list) -> None:
-    st.markdown(f"**{title}**")
-    if values:
-        st.markdown(" ".join(f"`{value}`" for value in values))
-    else:
-        st.caption("暂无")
+def get_api(path: str, show_error: bool = True) -> dict | None:
+    """Call a backend GET endpoint."""
+    try:
+        response = requests.get(f"{BACKEND_URL}{path}", timeout=15)
+        response.raise_for_status()
+        result = response.json()
+    except requests.RequestException:
+        if show_error:
+            st.error("无法连接后端，请确认后端服务已启动")
+        return None
+    except ValueError:
+        if show_error:
+            st.error("后端返回的数据格式不正确")
+        return None
+
+    if not result.get("success") and show_error:
+        st.error(result.get("message", "读取失败，请重试"))
+    return result
 
 
-st.set_page_config(page_title="知遇LinkLab - 找到你的科研搭档")
-st.title("知遇LinkLab - 找到你的科研搭档")
+def list_to_text(values: list | None) -> str:
+    return "\n".join(str(value) for value in (values or []))
 
-try:
-    health_response = requests.get(f"{BACKEND_URL}/api/health", timeout=5)
-    health_response.raise_for_status()
-    st.success("后端连接正常")
-except requests.RequestException:
-    st.error("后端未启动，请先启动后端服务")
 
-profile_tab, project_tab, match_tab = st.tabs(["能力画像", "项目发布", "匹配测试"])
+def text_to_list(value: str) -> list[str]:
+    return [item.strip() for item in re.split(r"[,，\n]", value) if item.strip()]
 
-with profile_tab:
-    st.header("能力画像")
-    raw_text = st.text_area(
-        "用户描述",
-        placeholder="请用自然语言描述你的技能、经历和协作偏好",
-        height=180,
-        key="profile_text",
+
+def set_profile_draft(data: dict, include_raw_text: bool = True) -> None:
+    st.session_state["profile_draft"] = True
+    if include_raw_text:
+        st.session_state["profile_raw_text"] = data.get("raw_text", "") or ""
+    st.session_state["profile_skills"] = list_to_text(data.get("skills"))
+    st.session_state["profile_skill_levels"] = json.dumps(
+        data.get("skill_levels", {}), ensure_ascii=False, indent=2
     )
-    if st.button("解析", key="profile_button"):
+    st.session_state["profile_experience"] = list_to_text(data.get("experience"))
+    st.session_state["profile_interests"] = list_to_text(data.get("interests"))
+    st.session_state["profile_preference"] = data.get("preference", "") or ""
+    st.session_state["profile_time"] = data.get("time_commitment", "未知") or "未知"
+
+
+def set_project_draft(data: dict) -> None:
+    st.session_state["project_draft"] = True
+    st.session_state["project_required_skills"] = list_to_text(
+        data.get("required_skills")
+    )
+    st.session_state["project_time"] = data.get("time_requirement", "未知") or "未知"
+    st.session_state["project_priority"] = list_to_text(data.get("priority"))
+    st.session_state["project_type"] = data.get("project_type", "") or ""
+    st.session_state["project_background"] = data.get("background", "") or ""
+
+
+def set_current_user(user_id: int, username: str, school: str | None) -> None:
+    st.session_state["user_id"] = user_id
+    st.session_state["username"] = username
+    st.session_state["school"] = school or ""
+
+
+def show_auth_page() -> None:
+    st.title("知遇LinkLab - 找到你的科研搭档")
+    login_tab, register_tab = st.tabs(["登录", "注册"])
+
+    with login_tab:
+        with st.form("login_form"):
+            email = st.text_input("邮箱", key="login_email")
+            submitted = st.form_submit_button("登录", use_container_width=True)
+
+        if submitted:
+            if not email.strip():
+                st.warning("请输入邮箱")
+            else:
+                result = post_api("/api/login", {"email": email.strip()})
+                if result:
+                    set_current_user(
+                        result["user_id"],
+                        result["username"],
+                        result.get("school"),
+                    )
+                    st.rerun()
+
+    with register_tab:
+        with st.form("register_form"):
+            username = st.text_input("用户名", key="register_username")
+            email = st.text_input("邮箱", key="register_email")
+            school = st.text_input("学校")
+            major = st.text_input("专业")
+            grade = st.text_input("年级")
+            submitted = st.form_submit_button("注册", use_container_width=True)
+
+        if submitted:
+            if not username.strip() or not email.strip():
+                st.warning("用户名和邮箱不能为空")
+            else:
+                result = post_api(
+                    "/api/register",
+                    {
+                        "username": username.strip(),
+                        "email": email.strip(),
+                        "school": school.strip(),
+                        "major": major.strip(),
+                        "grade": grade.strip(),
+                    },
+                )
+                if result:
+                    set_current_user(
+                        result["user_id"],
+                        result["username"],
+                        school.strip(),
+                    )
+                    st.rerun()
+
+
+def show_profile_page() -> None:
+    st.header("我的画像")
+    user_id = st.session_state["user_id"]
+    loaded_key = f"profile_loaded_{user_id}"
+
+    if not st.session_state.get(loaded_key):
+        existing = get_api(f"/api/profile/{user_id}", show_error=False)
+        if existing is not None:
+            st.session_state[loaded_key] = True
+            if existing.get("success"):
+                set_profile_draft(existing)
+
+    raw_text = st.text_area(
+        "自然语言描述",
+        placeholder="请描述你的技能、经历、兴趣、协作偏好和每周可投入时间",
+        height=160,
+        key="profile_raw_text",
+    )
+
+    if st.button("解析", key="parse_profile_button"):
         if not raw_text.strip():
-            st.warning("请先输入用户描述")
+            st.warning("请先输入个人描述")
         else:
             with st.spinner("AI正在解析中..."):
-                data = call_api("/api/parse_profile", {"raw_text": raw_text})
-            if data:
-                st.json(data)
+                result = post_api("/api/parse_profile", {"raw_text": raw_text})
+            if result:
+                parsed_data = result.get("data", {})
+                set_profile_draft(parsed_data, include_raw_text=False)
+                st.rerun()
 
-with project_tab:
-    st.header("项目发布")
-    project_name = st.text_input("项目名称")
-    project_text = st.text_area(
+    if st.session_state.get("profile_draft"):
+        st.subheader("画像内容")
+        left, right = st.columns(2)
+        with left:
+            st.text_area("技能（一行一项）", key="profile_skills", height=130)
+            st.text_area("项目经历（一行一项）", key="profile_experience", height=130)
+            st.text_input("协作偏好", key="profile_preference")
+        with right:
+            st.text_area(
+                "技能等级（JSON对象）",
+                key="profile_skill_levels",
+                height=130,
+            )
+            st.text_area("兴趣方向（一行一项）", key="profile_interests", height=130)
+            st.text_input("时间投入", key="profile_time")
+
+        if st.button("保存画像", type="primary", use_container_width=True):
+            try:
+                skill_levels = json.loads(st.session_state["profile_skill_levels"])
+                if not isinstance(skill_levels, dict):
+                    raise ValueError
+            except (json.JSONDecodeError, ValueError):
+                st.error("技能等级必须是JSON对象，例如 {\"Python\": \"熟练\"}")
+            else:
+                parsed_data = {
+                    "skills": text_to_list(st.session_state["profile_skills"]),
+                    "skill_levels": skill_levels,
+                    "experience": text_to_list(st.session_state["profile_experience"]),
+                    "interests": text_to_list(st.session_state["profile_interests"]),
+                    "preference": st.session_state["profile_preference"].strip(),
+                    "time_commitment": st.session_state["profile_time"].strip(),
+                }
+                result = post_api(
+                    "/api/save_profile",
+                    {
+                        "user_id": user_id,
+                        "raw_text": st.session_state["profile_raw_text"],
+                        "parsed_data": parsed_data,
+                    },
+                )
+                if result:
+                    st.success("画像保存成功")
+
+
+def show_publish_project_page() -> None:
+    st.header("发布项目")
+    project_name = st.text_input("项目名称", key="new_project_name")
+    raw_text = st.text_area(
         "需求描述",
         placeholder="请描述项目背景、所需技能、时间要求和优先条件",
+        height=160,
+        key="new_project_raw_text",
     )
-    if st.button("解析", key="project_button"):
-        if not project_name.strip() or not project_text.strip():
-            st.warning("请填写项目名称和需求描述")
+    scope_label = st.radio(
+        "开放范围",
+        ["同校优先", "接受跨校"],
+        horizontal=True,
+        key="new_project_scope",
+    )
+
+    if st.button("解析", key="parse_project_button"):
+        if not raw_text.strip():
+            st.warning("请先输入项目需求")
         else:
             with st.spinner("AI正在解析中..."):
-                data = call_api("/api/parse_project", {"raw_text": project_text})
-            if data:
-                st.subheader("解析结果")
-                st.json(data)
-
-with match_tab:
-    st.header("匹配测试")
-    user_column, project_column = st.columns(2)
-
-    with user_column:
-        st.subheader("用户画像")
-        match_user_text = st.text_area(
-            "用户自然语言或 JSON",
-            placeholder="输入自然语言，或粘贴已解析的用户画像 JSON",
-            height=180,
-        )
-        if st.button("解析并填入", key="match_profile_button"):
-            if not match_user_text.strip():
-                st.warning("请先输入用户画像")
-            else:
-                try:
-                    parsed = json.loads(match_user_text)
-                    if not isinstance(parsed, dict):
-                        raise ValueError
-                    st.session_state["match_user_profile"] = parsed
-                except (json.JSONDecodeError, ValueError):
-                    with st.spinner("AI正在解析中..."):
-                        data = call_api("/api/parse_profile", {"raw_text": match_user_text})
-                    if data:
-                        st.session_state["match_user_profile"] = data
-
-        user_profile = st.session_state.get("match_user_profile")
-        if user_profile:
-            show_tags("技能标签", user_profile.get("skills", []))
-            st.json(user_profile)
-
-    with project_column:
-        st.subheader("项目需求")
-        match_project_text = st.text_area(
-            "项目自然语言",
-            placeholder="输入项目背景、所需技能、时间要求和项目类型",
-            height=180,
-        )
-        if st.button("解析并填入", key="match_project_button"):
-            if not match_project_text.strip():
-                st.warning("请先输入项目需求")
-            else:
-                with st.spinner("AI正在解析中..."):
-                    data = call_api("/api/parse_project", {"raw_text": match_project_text})
-                if data:
-                    st.session_state["match_project_profile"] = data
-
-        project_profile = st.session_state.get("match_project_profile")
-        if project_profile:
-            show_tags("需求标签", project_profile.get("required_skills", []))
-            st.json(project_profile)
-
-    st.divider()
-    if st.button("计算匹配度", type="primary", use_container_width=True):
-        user_profile = st.session_state.get("match_user_profile")
-        project_profile = st.session_state.get("match_project_profile")
-        if not user_profile or not project_profile:
-            st.warning("请先完成用户画像和项目需求解析")
-        else:
-            with st.spinner("正在计算匹配度..."):
-                result = call_api(
-                    "/api/match",
-                    {"user_profile": user_profile, "project_profile": project_profile},
-                )
+                result = post_api("/api/parse_project", {"raw_text": raw_text})
             if result:
-                st.session_state["match_result"] = result
+                set_project_draft(result.get("data", {}))
+                st.rerun()
 
-    match_result = st.session_state.get("match_result")
-    if match_result:
-        st.subheader("匹配结果")
-        st.metric("综合匹配度", f"{match_result.get('total_score', 0) * 100:.1f}%")
+    if st.session_state.get("project_draft"):
+        st.subheader("项目需求")
+        left, right = st.columns(2)
+        with left:
+            st.text_area(
+                "所需技能（一行一项）",
+                key="project_required_skills",
+                height=130,
+            )
+            st.text_area("优先条件（一行一项）", key="project_priority", height=130)
+            st.text_input("项目类型", key="project_type")
+        with right:
+            st.text_input("时间要求", key="project_time")
+            st.text_area("项目背景", key="project_background", height=210)
 
-        skill_score = float(match_result.get("skill_match", 0))
-        time_score = float(match_result.get("time_match", 0))
-        experience_score = float(match_result.get("experience_match", 0))
+        if st.button("发布项目", type="primary", use_container_width=True):
+            if not project_name.strip():
+                st.warning("请填写项目名称")
+            else:
+                parsed_data = {
+                    "required_skills": text_to_list(
+                        st.session_state["project_required_skills"]
+                    ),
+                    "time_requirement": st.session_state["project_time"].strip(),
+                    "priority": text_to_list(st.session_state["project_priority"]),
+                    "project_type": st.session_state["project_type"].strip(),
+                    "background": st.session_state["project_background"].strip(),
+                }
+                result = post_api(
+                    "/api/create_project",
+                    {
+                        "owner_id": st.session_state["user_id"],
+                        "name": project_name.strip(),
+                        "raw_text": raw_text,
+                        "parsed_data": parsed_data,
+                        "scope": (
+                            "same_school"
+                            if scope_label == "同校优先"
+                            else "cross_school"
+                        ),
+                    },
+                )
+                if result:
+                    st.success(f"项目发布成功，项目ID：{result['project_id']}")
 
-        st.write(f"技能匹配：{skill_score * 100:.1f}%")
-        st.progress(min(max(skill_score, 0.0), 1.0))
-        st.write(f"时间匹配：{time_score * 100:.1f}%")
-        st.progress(min(max(time_score, 0.0), 1.0))
-        st.write(f"经历匹配：{experience_score * 100:.1f}%")
-        st.progress(min(max(experience_score, 0.0), 1.0))
-        st.info(match_result.get("explanation", "暂无匹配说明"))
 
-st.caption("同校优先，跨校开放")
+def show_match_recommendations_page() -> None:
+    st.header("匹配推荐")
+    st.write("这里是匹配推荐页")
+
+
+def show_my_projects_page() -> None:
+    st.header("我的项目")
+    st.write("这里是我的项目页")
+
+
+def show_authenticated_app() -> None:
+    with st.sidebar:
+        st.subheader(st.session_state["username"])
+        school = st.session_state.get("school")
+        if school:
+            st.caption(school)
+
+        page = st.radio(
+            "页面导航",
+            ["我的画像", "发布项目", "匹配推荐", "我的项目"],
+        )
+
+        if st.button("退出登录", use_container_width=True):
+            st.session_state.clear()
+            st.rerun()
+
+    pages = {
+        "我的画像": show_profile_page,
+        "发布项目": show_publish_project_page,
+        "匹配推荐": show_match_recommendations_page,
+        "我的项目": show_my_projects_page,
+    }
+    pages[page]()
+
+
+def main() -> None:
+    st.set_page_config(
+        page_title="知遇LinkLab - 找到你的科研搭档",
+        page_icon="🔗",
+        layout="wide",
+    )
+
+    if st.session_state.get("user_id"):
+        show_authenticated_app()
+    else:
+        show_auth_page()
+
+
+if __name__ == "__main__":
+    main()
