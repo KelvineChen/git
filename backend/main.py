@@ -1,5 +1,7 @@
 import re
 
+import models
+
 from fastapi import Depends, FastAPI
 from pydantic import BaseModel
 from sqlalchemy import or_, select
@@ -13,15 +15,16 @@ from ai_service import (
     parse_project_requirement,
     parse_user_profile,
 )
-from database import (
+from database import Base, engine, get_db, init_db
+from models import (
     MatchRecord,
     Project,
     ProjectProfile,
     User,
     UserProfile,
-    get_db,
-    init_db,
 )
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
@@ -234,6 +237,41 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
         "background": profile.background if profile else "",
         "updated_at": profile.updated_at if profile else None,
     }
+
+
+@app.get("/api/my_projects/{user_id}")
+def get_my_projects(user_id: int, db: Session = Depends(get_db)):
+    if db.get(User, user_id) is None:
+        return {"success": False, "message": "用户不存在"}
+
+    rows = db.execute(
+        select(Project, ProjectProfile)
+        .outerjoin(ProjectProfile, ProjectProfile.project_id == Project.id)
+        .where(Project.owner_id == user_id)
+        .order_by(Project.created_at.desc(), Project.id.desc())
+    ).all()
+
+    projects = []
+    for project, profile in rows:
+        projects.append(
+            {
+                "project_id": project.id,
+                "name": project.name,
+                "status": project.status,
+                "scope": project.scope,
+                "created_at": project.created_at.date().isoformat(),
+                "raw_text": project.raw_text or "",
+                "required_skills": profile.required_skills if profile else [],
+                "time_requirement": (
+                    profile.time_requirement if profile else "未知"
+                ),
+                "priority": profile.priority if profile else [],
+                "project_type": profile.project_type if profile else "",
+                "background": profile.background if profile else "",
+            }
+        )
+
+    return {"success": True, "projects": projects}
 
 @app.post("/api/parse_profile")
 def parse_profile(request: ProfileRequest):

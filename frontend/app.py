@@ -364,7 +364,56 @@ def show_match_recommendations_page() -> None:
 
 def show_my_projects_page() -> None:
     st.header("我的项目")
-    st.write("这里是我的项目页")
+    result = get_api(f"/api/my_projects/{st.session_state['user_id']}")
+    if result is None or not result.get("success"):
+        return
+
+    projects = result.get("projects", [])
+    if not projects:
+        st.info("你还没有发布项目")
+        return
+
+    st.success(f"共读取到 {len(projects)} 个项目")
+    status_labels = {
+        "recruiting": "招募中",
+        "closed": "已关闭",
+        "completed": "已完成",
+    }
+    scope_labels = {
+        "same_school": "同校优先",
+        "cross_school": "接受跨校",
+    }
+
+    for project in projects:
+        status = status_labels.get(project.get("status"), project.get("status", "未知"))
+        created_at = project.get("created_at") or "未知日期"
+        with st.expander(f"{project.get('name', '未命名项目')}  |  {status}  |  {created_at}"):
+            st.caption(
+                f"发布时间：{created_at} · "
+                f"开放范围：{scope_labels.get(project.get('scope'), '未设置')}"
+            )
+
+            required_skills = project.get("required_skills") or []
+            st.markdown("**所需技能**")
+            st.write("、".join(str(skill) for skill in required_skills) or "未填写")
+
+            left, right = st.columns(2)
+            with left:
+                st.markdown("**项目类型**")
+                st.write(project.get("project_type") or "未填写")
+                st.markdown("**时间要求**")
+                st.write(project.get("time_requirement") or "未知")
+            with right:
+                st.markdown("**优先条件**")
+                priority = project.get("priority") or []
+                st.write("、".join(str(item) for item in priority) or "无")
+                st.markdown("**当前状态**")
+                st.write(status)
+
+            st.markdown("**项目背景**")
+            st.write(project.get("background") or "未填写")
+            st.markdown("**原始需求描述**")
+            st.write(project.get("raw_text") or "未填写")
 
 
 def show_authenticated_app() -> None:
