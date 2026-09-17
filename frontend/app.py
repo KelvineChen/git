@@ -31,10 +31,14 @@ def post_api(path: str, payload: dict) -> dict | None:
     return result
 
 
-def get_api(path: str, show_error: bool = True) -> dict | None:
+def get_api(
+    path: str,
+    show_error: bool = True,
+    timeout: int = 15,
+) -> dict | None:
     """Call a backend GET endpoint."""
     try:
-        response = requests.get(f"{BACKEND_URL}{path}", timeout=15)
+        response = requests.get(f"{BACKEND_URL}{path}", timeout=timeout)
         response.raise_for_status()
         result = response.json()
     except requests.RequestException:
@@ -291,8 +295,71 @@ def show_publish_project_page() -> None:
 
 
 def show_match_recommendations_page() -> None:
-    st.header("匹配推荐")
-    st.write("这里是匹配推荐页")
+    st.header("为你推荐的匹配项目")
+    scope_label = st.radio(
+        "推荐范围",
+        ["同校优先", "跨校开放"],
+        horizontal=True,
+        key="match_scope",
+    )
+    scope = "same_school" if scope_label == "同校优先" else "cross_school"
+
+    with st.spinner("正在计算匹配度..."):
+        result = get_api(
+            f"/api/match_list/{st.session_state['user_id']}?scope={scope}",
+            timeout=120,
+        )
+
+    if result is None or not result.get("success"):
+        return
+
+    matches = result.get("matches", [])
+    if not matches:
+        st.info("暂时没有适合的项目，请先完善画像或等待更多项目发布")
+        return
+
+    st.success(f"匹配成功，共找到 {len(matches)} 个项目")
+    for match in matches:
+        project_id = match.get("project_id")
+        total_score = max(0.0, min(float(match.get("total_score", 0)), 1.0))
+        skill_match = max(0.0, min(float(match.get("skill_match", 0)), 1.0))
+        time_match = max(0.0, min(float(match.get("time_match", 0)), 1.0))
+        experience_match = max(
+            0.0,
+            min(float(match.get("experience_match", 0)), 1.0),
+        )
+
+        with st.container(border=True):
+            title_column, score_column = st.columns([4, 1])
+            with title_column:
+                st.subheader(match.get("project_name", "未命名项目"))
+                st.caption(
+                    f"项目发起人学校：{match.get('owner_school') or '未填写'}"
+                )
+            with score_column:
+                st.metric("综合匹配度", f"{total_score:.0%}")
+
+            skill_column, time_column, experience_column = st.columns(3)
+            with skill_column:
+                st.write(f"技能匹配：{skill_match:.0%}")
+                st.progress(skill_match)
+            with time_column:
+                st.write(f"时间匹配：{time_match:.0%}")
+                st.progress(time_match)
+            with experience_column:
+                st.write(f"经验匹配：{experience_match:.0%}")
+                st.progress(experience_match)
+
+            st.write(match.get("explanation") or "暂无匹配解释")
+            if st.button(
+                "感兴趣",
+                key=f"interested_project_{project_id}",
+                type="primary",
+            ):
+                st.info(
+                    f"已记录你对“{match.get('project_name', '该项目')}”感兴趣，"
+                    "申请功能将在下一模块开放"
+                )
 
 
 def show_my_projects_page() -> None:

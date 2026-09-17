@@ -14,6 +14,7 @@ from ai_service import (
     parse_user_profile,
 )
 from database import (
+    MatchRecord,
     Project,
     ProjectProfile,
     User,
@@ -358,18 +359,12 @@ def _build_match_explanation(
     return overall + advantage_text + gap_text
 
 
-@app.post("/api/match")
-def match_profiles(request: MatchRequest):
-    user = request.user_profile
-    project = request.project_profile
-
-    required_fields = {
-        "user": (user, ["skills", "skill_levels", "time_commitment", "experience"]),
-        "project": (project, ["required_skills", "time_requirement", "project_type"]),
-    }
-    if any(field not in data for data, fields in required_fields.values() for field in fields):
-        return {"success": False, "message": "数据不完整"}
-
+def _calculate_match_scores(
+    user: dict,
+    project: dict,
+    experience_score: float | None = None,
+) -> dict:
+    """Calculate all matching dimensions for one user/project pair."""
     normalized_user_skills = normalize_skills(user["skills"])
     normalized_user_interests = normalize_skills(user.get("interests", []))
     normalized_required_skills = normalize_skills(project["required_skills"])
@@ -425,10 +420,14 @@ def match_profiles(request: MatchRequest):
     print("[match debug] time match score:", time_match)
     project_type = str(project["project_type"])
     project_background = str(project.get("background", ""))
-    experience_match = judge_experience_relevance(
-        user_experience=user["experience"],
-        project_type=project_type,
-        project_background=project_background,
+    experience_match = (
+        experience_score
+        if experience_score is not None
+        else judge_experience_relevance(
+            user_experience=user["experience"],
+            project_type=project_type,
+            project_background=project_background,
+        )
     )
 
     print("[match debug] user experience:", user["experience"])
@@ -451,10 +450,126 @@ def match_profiles(request: MatchRequest):
     )
 
     return {
-        "success": True,
         "total_score": round(total_score, 3),
         "skill_match": round(skill_match, 3),
         "time_match": time_match,
         "experience_match": experience_match,
         "explanation": explanation,
     }
+
+
+@app.post("/api/match")
+def match_profiles(request: MatchRequest):
+    user = request.user_profile
+    project = request.project_profile
+
+    required_fields = {
+        "user": (user, ["skills", "skill_levels", "time_commitment", "experience"]),
+        "project": (project, ["required_skills", "time_requirement", "project_type"]),
+    }
+    if any(field not in data for data, fields in required_fields.values() for field in fields):
+        return {"success": False, "message": "数据不完整"}
+
+    return {"success": True, **_calculate_match_scores(user, project)}
+
+
+@app.get("/api/match_list/{user_id}")
+def get_match_list(
+    user_id: int,
+    scope: str | None = None,
+    db: Session = Depends(get_db),
+):
+    user_profile = db.scalar(
+        select(UserProfile).where(UserProfile.user_id == user_id)
+    )
+    if not user_profile:
+        return {"success": False, "message": "请先填写画像"}
+
+    current_user = db.get(User, user_id)
+    if not current_user:
+        return {"success": False, "message": "用户不存在"}
+
+    query = (
+        select(Project, ProjectProfile, User)
+        .join(ProjectProfile, ProjectProfile.project_id == Project.id)
+        .join(User, User.id == Project.owner_id)
+        .where(Project.status == "recruiting")
+    )
+    if scope == "same_school":
+        if not current_user.school:
+            return {"success": True, "matches": []}
+        query = query.where(User.school == current_user.school)
+
+    user_data = {
+        "skills": user_profile.skills or [],
+        "skill_levels": user_profile.skill_levels or {},
+        "experience": user_profile.experience or [],
+        "interests": user_profile.interests or [],
+        "time_commitment": user_profile.time_commitment or "未知",
+    }
+    matches = []
+    experience_cache: dict[tuple[int, int], float] = {}
+
+    try:
+        for project, project_profile, owner in db.execute(query).all():
+            project_data = {
+                "required_skills": project_profile.required_skills or [],
+                "time_requirement": project_profile.time_requirement or "未知",
+                "project_type": project_profile.project_type or "",
+                "background": project_profile.background or "",
+            }
+            cache_key = (user_id, project.id)
+            record = db.scalars(
+                select(MatchRecord)
+                .where(
+                    MatchRecord.user_id == user_id,
+                    MatchRecord.project_id == project.id,
+                )
+                .limit(1)
+            ).first()
+            if cache_key not in experience_cache:
+                experience_cache[cache_key] = (
+                    record.experience_match
+                    if record is not None
+                    else judge_experience_relevance(
+                        user_experience=user_data["experience"],
+                        project_type=project_data["project_type"],
+                        project_background=project_data["background"],
+                    )
+                )
+
+            scores = _calculate_match_scores(
+                user_data,
+                project_data,
+                experience_score=experience_cache[cache_key],
+            )
+            if record is None:
+                record = MatchRecord(user_id=user_id, project_id=project.id, **scores)
+                db.add(record)
+            else:
+                for field in (
+                    "total_score",
+                    "skill_match",
+                    "time_match",
+                    "experience_match",
+                    "explanation",
+                ):
+                    setattr(record, field, scores[field])
+
+            matches.append(
+                {
+                    "project_id": project.id,
+                    "project_name": project.name,
+                    "owner_school": owner.school or "",
+                    **scores,
+                    "scope": project.scope,
+                }
+            )
+
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        return {"success": False, "message": "匹配结果保存失败"}
+
+    matches.sort(key=lambda item: item["total_score"], reverse=True)
+    return {"success": True, "matches": matches}
