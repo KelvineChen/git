@@ -1,6 +1,10 @@
+import hashlib
 import re
+import secrets
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -41,6 +45,21 @@ class ProfileRequest(BaseModel):
     raw_text: str
 
 
+class AuthRegisterRequest(BaseModel):
+    username: str
+    password: str
+    confirm_password: str
+    email: str
+    school: str
+    major: str
+    grade: str
+
+
+class AuthLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
 class MatchRequest(BaseModel):
     user_profile: dict
     project_profile: dict
@@ -70,6 +89,141 @@ class CreateProjectRequest(BaseModel):
     raw_text: str
     parsed_data: dict
     scope: str = "same_school"
+
+
+def _hash_password(password: str) -> str:
+    """Hash a password with a per-user salt for database storage."""
+    iterations = 600_000
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        iterations,
+    )
+    return f"pbkdf2_sha256${iterations}${salt.hex()}${digest.hex()}"
+
+
+def _verify_password(password: str, password_hash: str | None) -> bool:
+    """Verify a password against the stored PBKDF2 hash."""
+    if not password_hash:
+        return False
+
+    try:
+        algorithm, iterations_text, salt_text, digest_text = password_hash.split("$")
+        if algorithm != "pbkdf2_sha256":
+            return False
+
+        iterations = int(iterations_text)
+        salt = bytes.fromhex(salt_text)
+        expected_digest = bytes.fromhex(digest_text)
+        actual_digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt,
+            iterations,
+        )
+        return secrets.compare_digest(actual_digest, expected_digest)
+    except (TypeError, ValueError):
+        return False
+
+
+@app.post("/api/auth/register")
+def auth_register(
+    request: AuthRegisterRequest,
+    db: Session = Depends(get_db),
+):
+    username = request.username.strip()
+    email = request.email.strip()
+    school = request.school.strip()
+    major = request.major.strip()
+    grade = request.grade.strip()
+
+    if request.password != request.confirm_password:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "password_mismatch"},
+        )
+
+    if not username or not email or not request.password.strip():
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_input"},
+        )
+
+    existing_username = db.scalar(
+        select(User).where(User.username == username)
+    )
+    if existing_username:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "username_taken"},
+        )
+
+    existing_email = db.scalar(select(User).where(User.email == email))
+    if existing_email:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "email_taken"},
+        )
+
+    user = User(
+        username=username,
+        email=email,
+        password_hash=_hash_password(request.password),
+        school=school,
+        major=major,
+        grade=grade,
+    )
+    try:
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    except IntegrityError:
+        db.rollback()
+        return JSONResponse(
+            status_code=400,
+            content={"error": "registration_failed"},
+        )
+    except SQLAlchemyError:
+        db.rollback()
+        return JSONResponse(
+            status_code=500,
+            content={"error": "registration_failed"},
+        )
+
+    return {"status": "ok"}
+
+
+@app.post("/api/auth/login")
+def auth_login(
+    request: AuthLoginRequest,
+    db: Session = Depends(get_db),
+):
+    username = request.username.strip()
+
+    user = db.scalar(select(User).where(User.username == username))
+    if not user:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "user_not_found"},
+        )
+
+    if not _verify_password(request.password, user.password_hash):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_password"},
+        )
+
+    token = str(uuid4())
+    return {
+        "status": "ok",
+        "token": token,
+        "user_id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "school": user.school,
+    }
 
 
 @app.post("/api/register")

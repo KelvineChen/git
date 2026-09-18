@@ -5,7 +5,7 @@ import requests
 import streamlit as st
 
 
-BACKEND_URL = "http://localhost:8000"
+BACKEND_URL = "http://127.0.0.1:8000"
 
 
 def post_api(path: str, payload: dict) -> dict | None:
@@ -18,6 +18,14 @@ def post_api(path: str, payload: dict) -> dict | None:
         )
         response.raise_for_status()
         result = response.json()
+    except requests.HTTPError as error:
+        try:
+            error_data = error.response.json()
+            error_code = error_data.get("error", "request_failed")
+        except (AttributeError, ValueError):
+            error_code = "request_failed"
+        st.error(f"后端请求失败（HTTP {error.response.status_code}）：{error_code}")
+        return None
     except requests.RequestException:
         st.error("无法连接后端，请确认后端服务已启动")
         return None
@@ -25,7 +33,7 @@ def post_api(path: str, payload: dict) -> dict | None:
         st.error("后端返回的数据格式不正确")
         return None
 
-    if not result.get("success"):
+    if not result.get("success") and result.get("status") != "ok":
         st.error(result.get("message", "操作失败，请重试"))
         return None
     return result
@@ -37,6 +45,17 @@ def get_api(path: str, show_error: bool = True) -> dict | None:
         response = requests.get(f"{BACKEND_URL}{path}", timeout=15)
         response.raise_for_status()
         result = response.json()
+    except requests.HTTPError as error:
+        if show_error:
+            try:
+                error_data = error.response.json()
+                error_code = error_data.get("error", "request_failed")
+            except (AttributeError, ValueError):
+                error_code = "request_failed"
+            st.error(
+                f"后端请求失败（HTTP {error.response.status_code}）：{error_code}"
+            )
+        return None
     except requests.RequestException:
         if show_error:
             st.error("无法连接后端，请确认后端服务已启动")
@@ -84,10 +103,19 @@ def set_project_draft(data: dict) -> None:
     st.session_state["project_background"] = data.get("background", "") or ""
 
 
-def set_current_user(user_id: int, username: str, school: str | None) -> None:
+def set_current_user(
+    user_id: int,
+    username: str,
+    school: str | None,
+    token: str | None = None,
+) -> None:
     st.session_state["user_id"] = user_id
     st.session_state["username"] = username
     st.session_state["school"] = school or ""
+    if token:
+        st.session_state["token"] = token
+    else:
+        st.session_state.pop("token", None)
 
 
 def show_auth_page() -> None:
@@ -96,52 +124,82 @@ def show_auth_page() -> None:
 
     with login_tab:
         with st.form("login_form"):
-            email = st.text_input("邮箱", key="login_email")
+            username = st.text_input("用户名", key="login_username")
+            password = st.text_input(
+                "密码",
+                type="password",
+                key="login_password",
+            )
             submitted = st.form_submit_button("登录", use_container_width=True)
 
         if submitted:
-            if not email.strip():
-                st.warning("请输入邮箱")
+            if not username.strip() or not password:
+                st.warning("请输入用户名和密码")
             else:
-                result = post_api("/api/login", {"email": email.strip()})
+                result = post_api(
+                    "/api/auth/login",
+                    {
+                        "username": username.strip(),
+                        "password": password,
+                    },
+                )
                 if result:
-                    set_current_user(
-                        result["user_id"],
-                        result["username"],
-                        result.get("school"),
-                    )
-                    st.rerun()
+                    token = result.get("token")
+                    if not token:
+                        st.error("登录成功但未获取到 token")
+                    else:
+                        set_current_user(
+                            result["user_id"],
+                            result["username"],
+                            result.get("school"),
+                            token,
+                        )
+                        st.rerun()
 
     with register_tab:
         with st.form("register_form"):
             username = st.text_input("用户名", key="register_username")
             email = st.text_input("邮箱", key="register_email")
-            school = st.text_input("学校")
-            major = st.text_input("专业")
-            grade = st.text_input("年级")
+            password = st.text_input(
+                "密码",
+                type="password",
+                key="register_password",
+            )
+            confirm_password = st.text_input(
+                "确认密码",
+                type="password",
+                key="register_confirm_password",
+            )
+            school = st.text_input("学校", key="register_school")
+            major = st.text_input("专业", key="register_major")
+            grade = st.text_input("年级", key="register_grade")
             submitted = st.form_submit_button("注册", use_container_width=True)
 
         if submitted:
-            if not username.strip() or not email.strip():
-                st.warning("用户名和邮箱不能为空")
+            if (
+                not username.strip()
+                or not email.strip()
+                or not password
+                or not confirm_password
+            ):
+                st.warning("用户名、邮箱和密码不能为空")
+            elif password != confirm_password:
+                st.error("两次输入的密码不一致")
             else:
                 result = post_api(
-                    "/api/register",
+                    "/api/auth/register",
                     {
                         "username": username.strip(),
                         "email": email.strip(),
+                        "password": password,
+                        "confirm_password": confirm_password,
                         "school": school.strip(),
                         "major": major.strip(),
                         "grade": grade.strip(),
                     },
                 )
                 if result:
-                    set_current_user(
-                        result["user_id"],
-                        result["username"],
-                        school.strip(),
-                    )
-                    st.rerun()
+                    st.success("注册成功，请使用用户名和密码登录")
 
 
 def show_profile_page() -> None:

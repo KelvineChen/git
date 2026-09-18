@@ -2,7 +2,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Generator
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, create_engine
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    create_engine,
+    inspect,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship, sessionmaker
 
 
@@ -28,6 +39,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     username: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
     email: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     school: Mapped[str | None] = mapped_column(String, nullable=True)
     major: Mapped[str | None] = mapped_column(String, nullable=True)
     grade: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -118,6 +130,14 @@ def init_db() -> None:
     """Create the data directory and all database tables if needed."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
+
+    # Keep existing SQLite databases compatible after adding password storage.
+    user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
+    if "password_hash" not in user_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(255)")
+            )
 
 
 def get_db() -> Generator[Session, None, None]:
