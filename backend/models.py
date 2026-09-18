@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -90,3 +90,21 @@ class MatchRecord(Base):
 
     user: Mapped[User] = relationship(back_populates="match_records")
     project: Mapped[Project] = relationship(back_populates="match_records")
+
+
+class OwnerInterest(Base):
+    __tablename__ = "owner_interests"
+    __table_args__ = (
+        UniqueConstraint("project_id", "user_id", name="uq_owner_interest"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id"), nullable=False, index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"), nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, nullable=False
+    )

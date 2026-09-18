@@ -18,6 +18,7 @@ from ai_service import (
 from database import Base, engine, get_db, init_db
 from models import (
     MatchRecord,
+    OwnerInterest,
     Project,
     ProjectProfile,
     User,
@@ -74,6 +75,11 @@ class CreateProjectRequest(BaseModel):
     raw_text: str
     parsed_data: dict
     scope: str = "same_school"
+
+
+class InterestRequest(BaseModel):
+    user_id: int
+    project_id: int
 
 
 @app.post("/api/register")
@@ -272,6 +278,131 @@ def get_my_projects(user_id: int, db: Session = Depends(get_db)):
         )
 
     return {"success": True, "projects": projects}
+
+
+@app.post("/api/interest")
+def mark_interest(request: InterestRequest, db: Session = Depends(get_db)):
+    if db.get(User, request.user_id) is None:
+        return {"success": False, "message": "用户不存在"}
+    if db.get(Project, request.project_id) is None:
+        return {"success": False, "message": "项目不存在"}
+
+    record = db.scalars(
+        select(MatchRecord)
+        .where(
+            MatchRecord.user_id == request.user_id,
+            MatchRecord.project_id == request.project_id,
+        )
+        .limit(1)
+    ).first()
+    if record:
+        record.status = "interested"
+    else:
+        db.add(
+            MatchRecord(
+                user_id=request.user_id,
+                project_id=request.project_id,
+                total_score=0.0,
+                skill_match=0.0,
+                time_match=0.0,
+                experience_match=0.0,
+                explanation="尚未计算匹配度",
+                status="interested",
+            )
+        )
+
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        return {"success": False, "message": "感兴趣状态保存失败"}
+    return {"success": True}
+
+
+@app.get("/api/interested_users/{project_id}")
+def get_interested_users(project_id: int, db: Session = Depends(get_db)):
+    if db.get(Project, project_id) is None:
+        return {"success": False, "message": "项目不存在"}
+
+    rows = db.execute(
+        select(User, MatchRecord)
+        .join(MatchRecord, MatchRecord.user_id == User.id)
+        .where(
+            MatchRecord.project_id == project_id,
+            MatchRecord.status == "interested",
+        )
+        .order_by(MatchRecord.total_score.desc())
+    ).all()
+
+    users_by_id = {}
+    for user, record in rows:
+        current = users_by_id.get(user.id)
+        if current is None or record.total_score > current["total_score"]:
+            users_by_id[user.id] = {
+                "user_id": user.id,
+                "username": user.username,
+                "school": user.school or "",
+                "total_score": round(record.total_score, 3),
+            }
+    users = sorted(
+        users_by_id.values(),
+        key=lambda item: item["total_score"],
+        reverse=True,
+    )
+    return {"success": True, "users": users}
+
+
+@app.post("/api/owner_interest")
+def mark_owner_interest(request: InterestRequest, db: Session = Depends(get_db)):
+    project = db.get(Project, request.project_id)
+    if not project:
+        return {"success": False, "message": "项目不存在"}
+    if db.get(User, request.user_id) is None:
+        return {"success": False, "message": "用户不存在"}
+    if project.owner_id == request.user_id:
+        return {"success": False, "message": "不能标记项目发起人本人"}
+
+    existing = db.scalar(
+        select(OwnerInterest).where(
+            OwnerInterest.project_id == request.project_id,
+            OwnerInterest.user_id == request.user_id,
+        )
+    )
+    if existing is None:
+        db.add(
+            OwnerInterest(
+                project_id=request.project_id,
+                user_id=request.user_id,
+            )
+        )
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            return {"success": False, "message": "发起人意向保存失败"}
+    return {"success": True}
+
+
+@app.post("/api/check_mutual")
+def check_mutual(request: InterestRequest, db: Session = Depends(get_db)):
+    user_interested = db.scalar(
+        select(MatchRecord.id)
+        .where(
+            MatchRecord.user_id == request.user_id,
+            MatchRecord.project_id == request.project_id,
+            MatchRecord.status == "interested",
+        )
+        .limit(1)
+    )
+    owner_interested = db.scalar(
+        select(OwnerInterest.id)
+        .where(
+            OwnerInterest.project_id == request.project_id,
+            OwnerInterest.user_id == request.user_id,
+        )
+        .limit(1)
+    )
+    return {"mutual": bool(user_interested and owner_interested)}
 
 @app.post("/api/parse_profile")
 def parse_profile(request: ProfileRequest):
