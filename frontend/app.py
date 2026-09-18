@@ -19,7 +19,7 @@ def post_api(path: str, payload: dict) -> dict | None:
         response.raise_for_status()
         result = response.json()
     except requests.RequestException:
-        st.error("网络异常，请稍后重试")
+        st.error("无法连接后端，请确认后端服务已启动")
         return None
     except ValueError:
         st.error("后端返回的数据格式不正确")
@@ -31,33 +31,28 @@ def post_api(path: str, payload: dict) -> dict | None:
     return result
 
 
-def get_api(path: str, timeout: int = 15) -> dict | None:
+def get_api(
+    path: str,
+    show_error: bool = True,
+    timeout: int = 15,
+) -> dict | None:
     """Call a backend GET endpoint."""
     try:
         response = requests.get(f"{BACKEND_URL}{path}", timeout=timeout)
         response.raise_for_status()
         result = response.json()
     except requests.RequestException:
-        st.error("网络异常，请稍后重试")
+        if show_error:
+            st.error("无法连接后端，请确认后端服务已启动")
         return None
     except ValueError:
-        st.error("后端返回的数据格式不正确")
+        if show_error:
+            st.error("后端返回的数据格式不正确")
         return None
 
-    if not result.get("success"):
+    if not result.get("success") and show_error:
         st.error(result.get("message", "读取失败，请重试"))
     return result
-
-
-def queue_success(message: str) -> None:
-    """Keep a success message visible after Streamlit reruns."""
-    st.session_state["success_message"] = message
-
-
-def show_queued_success() -> None:
-    message = st.session_state.pop("success_message", None)
-    if message:
-        st.success(message)
 
 
 def list_to_text(values: list | None) -> str:
@@ -112,15 +107,13 @@ def show_auth_page() -> None:
             if not email.strip():
                 st.warning("请输入邮箱")
             else:
-                with st.spinner("正在登录..."):
-                    result = post_api("/api/login", {"email": email.strip()})
+                result = post_api("/api/login", {"email": email.strip()})
                 if result:
                     set_current_user(
                         result["user_id"],
                         result["username"],
                         result.get("school"),
                     )
-                    queue_success("登录成功")
                     st.rerun()
 
     with register_tab:
@@ -136,24 +129,22 @@ def show_auth_page() -> None:
             if not username.strip() or not email.strip():
                 st.warning("用户名和邮箱不能为空")
             else:
-                with st.spinner("正在注册..."):
-                    result = post_api(
-                        "/api/register",
-                        {
-                            "username": username.strip(),
-                            "email": email.strip(),
-                            "school": school.strip(),
-                            "major": major.strip(),
-                            "grade": grade.strip(),
-                        },
-                    )
+                result = post_api(
+                    "/api/register",
+                    {
+                        "username": username.strip(),
+                        "email": email.strip(),
+                        "school": school.strip(),
+                        "major": major.strip(),
+                        "grade": grade.strip(),
+                    },
+                )
                 if result:
                     set_current_user(
                         result["user_id"],
                         result["username"],
                         school.strip(),
                     )
-                    queue_success("注册成功，已自动登录")
                     st.rerun()
 
 
@@ -163,13 +154,11 @@ def show_profile_page() -> None:
     loaded_key = f"profile_loaded_{user_id}"
 
     if not st.session_state.get(loaded_key):
-        with st.spinner("正在读取画像..."):
-            existing = get_api(f"/api/profile/{user_id}")
+        existing = get_api(f"/api/profile/{user_id}", show_error=False)
         if existing is not None:
             st.session_state[loaded_key] = True
             if existing.get("success"):
                 set_profile_draft(existing)
-                st.success("画像加载成功")
 
     raw_text = st.text_area(
         "自然语言描述",
@@ -187,7 +176,6 @@ def show_profile_page() -> None:
             if result:
                 parsed_data = result.get("data", {})
                 set_profile_draft(parsed_data, include_raw_text=False)
-                queue_success("画像解析成功")
                 st.rerun()
 
     if st.session_state.get("profile_draft"):
@@ -222,15 +210,14 @@ def show_profile_page() -> None:
                     "preference": st.session_state["profile_preference"].strip(),
                     "time_commitment": st.session_state["profile_time"].strip(),
                 }
-                with st.spinner("正在保存画像..."):
-                    result = post_api(
-                        "/api/save_profile",
-                        {
-                            "user_id": user_id,
-                            "raw_text": st.session_state["profile_raw_text"],
-                            "parsed_data": parsed_data,
-                        },
-                    )
+                result = post_api(
+                    "/api/save_profile",
+                    {
+                        "user_id": user_id,
+                        "raw_text": st.session_state["profile_raw_text"],
+                        "parsed_data": parsed_data,
+                    },
+                )
                 if result:
                     st.success("画像保存成功")
 
@@ -259,7 +246,6 @@ def show_publish_project_page() -> None:
                 result = post_api("/api/parse_project", {"raw_text": raw_text})
             if result:
                 set_project_draft(result.get("data", {}))
-                queue_success("项目需求解析成功")
                 st.rerun()
 
     if st.session_state.get("project_draft"):
@@ -290,27 +276,30 @@ def show_publish_project_page() -> None:
                     "project_type": st.session_state["project_type"].strip(),
                     "background": st.session_state["project_background"].strip(),
                 }
-                with st.spinner("正在发布项目..."):
-                    result = post_api(
-                        "/api/create_project",
-                        {
-                            "owner_id": st.session_state["user_id"],
-                            "name": project_name.strip(),
-                            "raw_text": raw_text,
-                            "parsed_data": parsed_data,
-                            "scope": (
-                                "same_school"
-                                if scope_label == "同校优先"
-                                else "cross_school"
-                            ),
-                        },
-                    )
+                result = post_api(
+                    "/api/create_project",
+                    {
+                        "owner_id": st.session_state["user_id"],
+                        "name": project_name.strip(),
+                        "raw_text": raw_text,
+                        "parsed_data": parsed_data,
+                        "scope": (
+                            "same_school"
+                            if scope_label == "同校优先"
+                            else "cross_school"
+                        ),
+                    },
+                )
                 if result:
                     st.success(f"项目发布成功，项目ID：{result['project_id']}")
 
 
 def show_match_recommendations_page() -> None:
     st.header("为你推荐的匹配项目")
+    success_message = st.session_state.pop("interest_success_message", None)
+    if success_message:
+        st.success(success_message)
+
     scope_label = st.radio(
         "推荐范围",
         ["同校优先", "跨校开放"],
@@ -329,11 +318,11 @@ def show_match_recommendations_page() -> None:
         return
 
     matches = result.get("matches", [])
-    st.success(f"匹配列表加载成功，共找到 {len(matches)} 个项目")
     if not matches:
         st.info("暂时没有适合的项目，请先完善画像或等待更多项目发布")
         return
 
+    st.success(f"匹配成功，共找到 {len(matches)} 个项目")
     for match in matches:
         project_id = match.get("project_id")
         is_interested = bool(match.get("interested")) or (
@@ -375,17 +364,16 @@ def show_match_recommendations_page() -> None:
                 type="primary",
                 disabled=is_interested,
             ):
-                with st.spinner("正在保存感兴趣状态..."):
-                    interest_result = post_api(
-                        "/api/interest",
-                        {
-                            "user_id": st.session_state["user_id"],
-                            "project_id": project_id,
-                        },
-                    )
+                interest_result = post_api(
+                    "/api/interest",
+                    {
+                        "user_id": st.session_state["user_id"],
+                        "project_id": project_id,
+                    },
+                )
                 if interest_result:
                     project_name = match.get("project_name", "该项目")
-                    queue_success(
+                    st.session_state["interest_success_message"] = (
                         f"已成功标记对“{project_name}”感兴趣"
                     )
                     st.rerun()
@@ -393,17 +381,16 @@ def show_match_recommendations_page() -> None:
 
 def show_my_projects_page() -> None:
     st.header("我的项目")
-    with st.spinner("正在读取项目列表..."):
-        result = get_api(f"/api/my_projects/{st.session_state['user_id']}")
+    result = get_api(f"/api/my_projects/{st.session_state['user_id']}")
     if result is None or not result.get("success"):
         return
 
     projects = result.get("projects", [])
-    st.success(f"项目列表加载成功，共 {len(projects)} 个项目")
     if not projects:
         st.info("你还没有发布项目")
         return
 
+    st.success(f"共读取到 {len(projects)} 个项目")
     status_labels = {
         "recruiting": "招募中",
         "closed": "已关闭",
@@ -447,7 +434,6 @@ def show_my_projects_page() -> None:
 
 
 def show_authenticated_app() -> None:
-    show_queued_success()
     with st.sidebar:
         st.subheader(st.session_state["username"])
         school = st.session_state.get("school")
