@@ -4,7 +4,7 @@ import models
 
 from fastapi import Depends, FastAPI
 from pydantic import BaseModel
-from sqlalchemy import or_, select
+from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -82,6 +82,12 @@ class InterestRequest(BaseModel):
     project_id: int
 
 
+class ProjectStatusRequest(BaseModel):
+    owner_id: int
+    project_id: int
+    status: str
+
+
 @app.post("/api/register")
 def register(request: RegisterRequest, db: Session = Depends(get_db)):
     existing_user = db.scalar(
@@ -155,6 +161,9 @@ def save_profile(request: SaveProfileRequest, db: Session = Depends(get_db)):
         db.add(profile)
 
     try:
+        db.execute(
+            delete(MatchRecord).where(MatchRecord.user_id == request.user_id)
+        )
         db.commit()
     except SQLAlchemyError:
         db.rollback()
@@ -196,6 +205,60 @@ def create_project(request: CreateProjectRequest, db: Session = Depends(get_db))
         return {"success": False, "message": "项目创建失败"}
 
     return {"success": True, "project_id": project.id}
+
+
+@app.post("/api/project_status")
+def update_project_status(
+    request: ProjectStatusRequest,
+    db: Session = Depends(get_db),
+):
+    project = db.get(Project, request.project_id)
+    if not project:
+        return {"success": False, "message": "项目不存在"}
+    if project.owner_id != request.owner_id:
+        return {"success": False, "message": "无权修改该项目"}
+
+    allowed_statuses = {"recruiting", "full", "closed", "completed"}
+    if request.status not in allowed_statuses:
+        return {"success": False, "message": "项目状态无效"}
+
+    project.status = request.status
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        return {"success": False, "message": "项目状态更新失败"}
+    return {"success": True, "status": project.status}
+
+
+@app.delete("/api/project/{project_id}")
+def delete_project(
+    project_id: int,
+    owner_id: int,
+    db: Session = Depends(get_db),
+):
+    project = db.get(Project, project_id)
+    if not project:
+        return {"success": False, "message": "项目不存在"}
+    if project.owner_id != owner_id:
+        return {"success": False, "message": "无权删除该项目"}
+
+    try:
+        db.execute(
+            delete(OwnerInterest).where(OwnerInterest.project_id == project_id)
+        )
+        db.execute(
+            delete(MatchRecord).where(MatchRecord.project_id == project_id)
+        )
+        db.execute(
+            delete(ProjectProfile).where(ProjectProfile.project_id == project_id)
+        )
+        db.delete(project)
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        return {"success": False, "message": "项目删除失败"}
+    return {"success": True}
 
 
 @app.get("/api/profile/{user_id}")
@@ -287,16 +350,16 @@ def mark_interest(request: InterestRequest, db: Session = Depends(get_db)):
     if db.get(Project, request.project_id) is None:
         return {"success": False, "message": "项目不存在"}
 
-    record = db.scalars(
+    records = db.scalars(
         select(MatchRecord)
         .where(
             MatchRecord.user_id == request.user_id,
             MatchRecord.project_id == request.project_id,
         )
-        .limit(1)
-    ).first()
-    if record:
-        record.status = "interested"
+    ).all()
+    if records:
+        for record in records:
+            record.status = "interested"
     else:
         db.add(
             MatchRecord(
@@ -313,10 +376,26 @@ def mark_interest(request: InterestRequest, db: Session = Depends(get_db)):
 
     try:
         db.commit()
+    except IntegrityError:
+        db.rollback()
+        concurrent_record = db.scalar(
+            select(MatchRecord).where(
+                MatchRecord.user_id == request.user_id,
+                MatchRecord.project_id == request.project_id,
+            )
+        )
+        if concurrent_record is None:
+            return {"success": False, "message": "感兴趣状态保存失败"}
+        concurrent_record.status = "interested"
+        try:
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
+            return {"success": False, "message": "感兴趣状态保存失败"}
     except SQLAlchemyError:
         db.rollback()
         return {"success": False, "message": "感兴趣状态保存失败"}
-    return {"success": True}
+    return {"success": True, "status": "interested"}
 
 
 @app.get("/api/interested_users/{project_id}")
@@ -700,6 +779,7 @@ def get_match_list(
                 experience_cache[cache_key] = (
                     record.experience_match
                     if record is not None
+                    and record.explanation != "尚未计算匹配度"
                     else judge_experience_relevance(
                         user_experience=user_data["experience"],
                         project_type=project_data["project_type"],
@@ -732,6 +812,8 @@ def get_match_list(
                     "owner_school": owner.school or "",
                     **scores,
                     "scope": project.scope,
+                    "status": record.status or "pending",
+                    "interested": record.status == "interested",
                 }
             )
 

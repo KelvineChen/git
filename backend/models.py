@@ -76,6 +76,9 @@ class ProjectProfile(Base):
 
 class MatchRecord(Base):
     __tablename__ = "match_records"
+    __table_args__ = (
+        UniqueConstraint("user_id", "project_id", name="uq_match_record"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
