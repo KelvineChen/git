@@ -8,7 +8,11 @@ import streamlit as st
 BACKEND_URL = "http://127.0.0.1:8000"
 
 
-def post_api(path: str, payload: dict) -> dict | None:
+def post_api(
+    path: str,
+    payload: dict,
+    error_messages: dict[str, str] | None = None,
+) -> dict | None:
     """Call a backend POST endpoint and show user-friendly errors."""
     try:
         response = requests.post(
@@ -24,7 +28,12 @@ def post_api(path: str, payload: dict) -> dict | None:
             error_code = error_data.get("error", "request_failed")
         except (AttributeError, ValueError):
             error_code = "request_failed"
-        st.error(f"后端请求失败（HTTP {error.response.status_code}）：{error_code}")
+        if error_messages and error_code in error_messages:
+            st.error(error_messages[error_code])
+        else:
+            st.error(
+                f"后端请求失败（HTTP {error.response.status_code}）：{error_code}"
+            )
         return None
     except requests.RequestException:
         st.error("无法连接后端，请确认后端服务已启动")
@@ -141,6 +150,10 @@ def show_auth_page() -> None:
                     {
                         "username": username.strip(),
                         "password": password,
+                    },
+                    error_messages={
+                        "user_not_found": "用户不存在",
+                        "invalid_password": "密码错误",
                     },
                 )
                 if result:
