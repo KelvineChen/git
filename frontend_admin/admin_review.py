@@ -1,15 +1,6 @@
-import requests
 import streamlit as st
 
-
-BACKEND_URL = "http://127.0.0.1:8000"
-
-
-def _error_code(response: requests.Response) -> str:
-    try:
-        return response.json().get("error", "request_failed")
-    except ValueError:
-        return "request_failed"
+from api_client import api_request
 
 
 def _extract_admins(result: object) -> list[dict]:
@@ -28,25 +19,13 @@ def _extract_admins(result: object) -> list[dict]:
 
 
 def _load_pending_admins(token: str) -> list[dict] | None:
-    try:
-        response = requests.get(
-            f"{BACKEND_URL}/api/admin/review/list",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=15,
-        )
-        response.raise_for_status()
-        result = response.json()
-    except requests.HTTPError as error:
-        if error.response is not None:
-            st.error(f"加载审核列表失败：{_error_code(error.response)}")
-        else:
-            st.error("加载审核列表失败")
-        return None
-    except requests.RequestException:
-        st.error("审核服务暂不可用，请稍后重试")
-        return None
-    except ValueError:
-        st.error("审核服务返回的数据格式不正确")
+    result = api_request(
+        "GET",
+        "/api/admin/review/list",
+        token=token,
+        success_message="审核列表加载成功",
+    )
+    if result is None:
         return None
 
     admins = _extract_admins(result)
@@ -59,28 +38,14 @@ def _load_pending_admins(token: str) -> list[dict] | None:
 
 
 def _review_admin(token: str, admin_name: str, action: str) -> bool:
-    try:
-        response = requests.post(
-            f"{BACKEND_URL}/api/admin/review/action",
-            headers={"Authorization": f"Bearer {token}"},
-            json={
-                "admin_name": admin_name,
-                "action": action,
-            },
-            timeout=15,
-        )
-        response.raise_for_status()
-    except requests.HTTPError as error:
-        if error.response is not None:
-            st.error(f"审核操作失败：{_error_code(error.response)}")
-        else:
-            st.error("审核操作失败")
-        return False
-    except requests.RequestException:
-        st.error("审核服务暂不可用，请稍后重试")
-        return False
-
-    return True
+    result = api_request(
+        "POST",
+        "/api/admin/review/action",
+        token=token,
+        json={"admin_name": admin_name, "action": action},
+        success_message="审核操作成功",
+    )
+    return result is not None
 
 
 st.set_page_config(
@@ -103,7 +68,8 @@ if st.session_state.get("admin_status") != "approved":
 
 st.caption("仅显示 admin_status = pending 的管理员")
 
-pending_admins = _load_pending_admins(admin_token)
+with st.spinner("正在加载审核列表..."):
+    pending_admins = _load_pending_admins(admin_token)
 if pending_admins is None:
     st.stop()
 
@@ -130,7 +96,9 @@ else:
                     key=f"approve_{index}_{admin_name}",
                     use_container_width=True,
                 ):
-                    if _review_admin(admin_token, admin_name, "approve"):
+                    with st.spinner("正在提交审核结果..."):
+                        reviewed = _review_admin(admin_token, admin_name, "approve")
+                    if reviewed:
                         st.rerun()
 
                 if st.button(
@@ -138,7 +106,9 @@ else:
                     key=f"reject_{index}_{admin_name}",
                     use_container_width=True,
                 ):
-                    if _review_admin(admin_token, admin_name, "reject"):
+                    with st.spinner("正在提交审核结果..."):
+                        reviewed = _review_admin(admin_token, admin_name, "reject")
+                    if reviewed:
                         st.rerun()
 
 st.divider()

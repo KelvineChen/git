@@ -1,8 +1,6 @@
-import requests
 import streamlit as st
 
-
-BACKEND_URL = "http://127.0.0.1:8000"
+from api_client import api_request
 KNOWN_FIELDS = (
     ("title", "竞赛名称"),
     ("creator", "发布者"),
@@ -23,40 +21,17 @@ def _query_competition_id() -> str:
         return str(value).strip()
 
 
-def _error_code(response: requests.Response) -> str:
-    try:
-        return response.json().get("error", "request_failed")
-    except ValueError:
-        return "request_failed"
-
-
 def _load_competition_detail(
     token: str,
     competition_id: str,
 ) -> dict | None:
-    try:
-        response = requests.get(
-            f"{BACKEND_URL}/api/admin/competition/{competition_id}",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=15,
-        )
-        response.raise_for_status()
-        result = response.json()
-    except requests.HTTPError as error:
-        if error.response is not None:
-            st.error(_error_code(error.response))
-        else:
-            st.error("竞赛详情请求失败")
-        return None
-    except requests.RequestException:
-        st.error("竞赛详情服务暂不可用，请稍后重试")
-        return None
-    except ValueError:
-        st.error("竞赛详情服务返回的数据格式不正确")
-        return None
-
-    if isinstance(result, dict) and result.get("error"):
-        st.error(str(result["error"]))
+    result = api_request(
+        "GET",
+        f"/api/admin/competition/{competition_id}",
+        token=token,
+        success_message="竞赛详情加载成功",
+    )
+    if result is None:
         return None
 
     if isinstance(result, dict) and isinstance(result.get("data"), dict):
@@ -88,7 +63,8 @@ if not competition_id:
         st.switch_page("admin_competitions.py")
     st.stop()
 
-competition_data = _load_competition_detail(admin_token, competition_id)
+with st.spinner("正在加载竞赛详情..."):
+    competition_data = _load_competition_detail(admin_token, competition_id)
 if competition_data is not None:
     displayed_fields = set()
 

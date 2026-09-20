@@ -900,7 +900,11 @@ def mark_interest(request: InterestRequest, db: Session = Depends(get_db)):
     except SQLAlchemyError:
         db.rollback()
         return {"success": False, "message": "感兴趣状态保存失败"}
-    return {"success": True, "status": "interested"}
+    return {
+        "success": True,
+        "status": "interested",
+        "interested": True,
+    }
 
 
 @app.get("/api/interested_users/{project_id}")

@@ -1,15 +1,6 @@
-import requests
 import streamlit as st
 
-
-BACKEND_URL = "http://127.0.0.1:8000"
-
-
-def _error_code(response: requests.Response) -> str:
-    try:
-        return response.json().get("error", "request_failed")
-    except ValueError:
-        return "request_failed"
+from api_client import api_request
 
 
 def _extract_users(result: object) -> list[dict]:
@@ -34,30 +25,14 @@ def _load_users(
 ) -> list[dict] | None:
     path = "/api/admin/users/search" if search else "/api/admin/users"
 
-    try:
-        response = requests.get(
-            f"{BACKEND_URL}{path}",
-            headers={"Authorization": f"Bearer {token}"},
-            params=params if search else None,
-            timeout=15,
-        )
-        response.raise_for_status()
-        result = response.json()
-    except requests.HTTPError as error:
-        if error.response is not None:
-            st.error(_error_code(error.response))
-        else:
-            st.error("用户列表请求失败")
-        return None
-    except requests.RequestException:
-        st.error("用户管理服务暂不可用，请稍后重试")
-        return None
-    except ValueError:
-        st.error("用户管理服务返回的数据格式不正确")
-        return None
-
-    if isinstance(result, dict) and result.get("error"):
-        st.error(str(result["error"]))
+    result = api_request(
+        "GET",
+        path,
+        token=token,
+        params=params if search else None,
+        success_message="用户列表加载成功",
+    )
+    if result is None:
         return None
 
     return _extract_users(result)
@@ -88,18 +63,19 @@ with col3:
 
 search_submitted = st.button("搜索", type="primary")
 
-if search_submitted:
-    users = _load_users(
-        admin_token,
-        search=True,
-        params={
-            "username": username.strip(),
-            "school": school.strip(),
-            "major": major.strip(),
-        },
-    )
-else:
-    users = _load_users(admin_token)
+with st.spinner("正在加载用户列表..."):
+    if search_submitted:
+        users = _load_users(
+            admin_token,
+            search=True,
+            params={
+                "username": username.strip(),
+                "school": school.strip(),
+                "major": major.strip(),
+            },
+        )
+    else:
+        users = _load_users(admin_token)
 
 if users is None:
     st.stop()

@@ -36,7 +36,7 @@ def post_api(
             )
         return None
     except requests.RequestException:
-        st.error("无法连接后端，请确认后端服务已启动")
+        st.error("网络异常，请稍后重试")
         return None
     except ValueError:
         st.error("后端返回的数据格式不正确")
@@ -71,7 +71,7 @@ def get_api(
         return None
     except requests.RequestException:
         if show_error:
-            st.error("无法连接后端，请确认后端服务已启动")
+            st.error("网络异常，请稍后重试")
         return None
     except ValueError:
         if show_error:
@@ -81,6 +81,16 @@ def get_api(
     if not result.get("success") and show_error:
         st.error(result.get("message", "读取失败，请重试"))
     return result
+
+
+def queue_success(message: str) -> None:
+    st.session_state["success_message"] = message
+
+
+def show_queued_success() -> None:
+    message = st.session_state.pop("success_message", None)
+    if message:
+        st.success(message)
 
 
 def list_to_text(values: list | None) -> str:
@@ -149,17 +159,18 @@ def show_auth_page() -> None:
             if not username.strip() or not password:
                 st.warning("请输入用户名和密码")
             else:
-                result = post_api(
-                    "/api/auth/login",
-                    {
-                        "username": username.strip(),
-                        "password": password,
-                    },
-                    error_messages={
-                        "user_not_found": "用户不存在",
-                        "invalid_password": "密码错误",
-                    },
-                )
+                with st.spinner("正在登录..."):
+                    result = post_api(
+                        "/api/auth/login",
+                        {
+                            "username": username.strip(),
+                            "password": password,
+                        },
+                        error_messages={
+                            "user_not_found": "用户不存在",
+                            "invalid_password": "密码错误",
+                        },
+                    )
                 if result:
                     token = result.get("token")
                     if not token:
@@ -171,6 +182,7 @@ def show_auth_page() -> None:
                             result.get("school"),
                             token,
                         )
+                        queue_success("登录成功")
                         st.rerun()
 
     with register_tab:
@@ -203,18 +215,19 @@ def show_auth_page() -> None:
             elif password != confirm_password:
                 st.error("两次输入的密码不一致")
             else:
-                result = post_api(
-                    "/api/auth/register",
-                    {
-                        "username": username.strip(),
-                        "email": email.strip(),
-                        "password": password,
-                        "confirm_password": confirm_password,
-                        "school": school.strip(),
-                        "major": major.strip(),
-                        "grade": grade.strip(),
-                    },
-                )
+                with st.spinner("正在注册..."):
+                    result = post_api(
+                        "/api/auth/register",
+                        {
+                            "username": username.strip(),
+                            "email": email.strip(),
+                            "password": password,
+                            "confirm_password": confirm_password,
+                            "school": school.strip(),
+                            "major": major.strip(),
+                            "grade": grade.strip(),
+                        },
+                    )
                 if result:
                     st.success("注册成功，请使用用户名和密码登录")
 
@@ -225,11 +238,13 @@ def show_profile_page() -> None:
     loaded_key = f"profile_loaded_{user_id}"
 
     if not st.session_state.get(loaded_key):
-        existing = get_api(f"/api/profile/{user_id}", show_error=False)
+        with st.spinner("正在读取画像..."):
+            existing = get_api(f"/api/profile/{user_id}")
         if existing is not None:
             st.session_state[loaded_key] = True
             if existing.get("success"):
                 set_profile_draft(existing)
+                st.success("画像加载成功")
 
     raw_text = st.text_area(
         "自然语言描述",
@@ -247,6 +262,7 @@ def show_profile_page() -> None:
             if result:
                 parsed_data = result.get("data", {})
                 set_profile_draft(parsed_data, include_raw_text=False)
+                queue_success("画像解析成功")
                 st.rerun()
 
     if st.session_state.get("profile_draft"):
@@ -281,14 +297,15 @@ def show_profile_page() -> None:
                     "preference": st.session_state["profile_preference"].strip(),
                     "time_commitment": st.session_state["profile_time"].strip(),
                 }
-                result = post_api(
-                    "/api/save_profile",
-                    {
-                        "user_id": user_id,
-                        "raw_text": st.session_state["profile_raw_text"],
-                        "parsed_data": parsed_data,
-                    },
-                )
+                with st.spinner("正在保存画像..."):
+                    result = post_api(
+                        "/api/save_profile",
+                        {
+                            "user_id": user_id,
+                            "raw_text": st.session_state["profile_raw_text"],
+                            "parsed_data": parsed_data,
+                        },
+                    )
                 if result:
                     st.success("画像保存成功")
 
@@ -317,6 +334,7 @@ def show_publish_project_page() -> None:
                 result = post_api("/api/parse_project", {"raw_text": raw_text})
             if result:
                 set_project_draft(result.get("data", {}))
+                queue_success("项目需求解析成功")
                 st.rerun()
 
     if st.session_state.get("project_draft"):
@@ -347,20 +365,21 @@ def show_publish_project_page() -> None:
                     "project_type": st.session_state["project_type"].strip(),
                     "background": st.session_state["project_background"].strip(),
                 }
-                result = post_api(
-                    "/api/create_project",
-                    {
-                        "owner_id": st.session_state["user_id"],
-                        "name": project_name.strip(),
-                        "raw_text": raw_text,
-                        "parsed_data": parsed_data,
-                        "scope": (
-                            "same_school"
-                            if scope_label == "同校优先"
-                            else "cross_school"
-                        ),
-                    },
-                )
+                with st.spinner("正在发布项目..."):
+                    result = post_api(
+                        "/api/create_project",
+                        {
+                            "owner_id": st.session_state["user_id"],
+                            "name": project_name.strip(),
+                            "raw_text": raw_text,
+                            "parsed_data": parsed_data,
+                            "scope": (
+                                "same_school"
+                                if scope_label == "同校优先"
+                                else "cross_school"
+                            ),
+                        },
+                    )
                 if result:
                     st.success(f"项目发布成功，项目ID：{result['project_id']}")
 
@@ -435,24 +454,31 @@ def show_match_recommendations_page() -> None:
                 type="primary",
                 disabled=is_interested,
             ):
-                interest_result = post_api(
-                    "/api/interest",
-                    {
-                        "user_id": st.session_state["user_id"],
-                        "project_id": project_id,
-                    },
-                )
-                if interest_result:
+                if project_id is None:
+                    st.error("项目信息不完整，请刷新后重试")
+                    continue
+                with st.spinner("正在保存感兴趣状态..."):
+                    interest_result = post_api(
+                        "/api/interest",
+                        {
+                            "user_id": st.session_state["user_id"],
+                            "project_id": project_id,
+                        },
+                    )
+                if interest_result and interest_result.get("interested"):
                     project_name = match.get("project_name", "该项目")
                     st.session_state["interest_success_message"] = (
                         f"已成功标记对“{project_name}”感兴趣"
                     )
                     st.rerun()
+                elif interest_result:
+                    st.error("感兴趣状态未保存，请稍后重试")
 
 
 def show_my_projects_page() -> None:
     st.header("我的项目")
-    result = get_api(f"/api/my_projects/{st.session_state['user_id']}")
+    with st.spinner("正在读取项目列表..."):
+        result = get_api(f"/api/my_projects/{st.session_state['user_id']}")
     if result is None or not result.get("success"):
         return
 
@@ -505,6 +531,7 @@ def show_my_projects_page() -> None:
 
 
 def show_authenticated_app() -> None:
+    show_queued_success()
     with st.sidebar:
         st.subheader(st.session_state["username"])
         school = st.session_state.get("school")

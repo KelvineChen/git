@@ -1,8 +1,6 @@
-import requests
 import streamlit as st
 
-
-BACKEND_URL = "http://127.0.0.1:8000"
+from api_client import api_request
 KNOWN_FIELDS = (
     ("username", "用户名"),
     ("email", "邮箱"),
@@ -31,37 +29,14 @@ def _query_username() -> str:
         return str(value).strip()
 
 
-def _error_code(response: requests.Response) -> str:
-    try:
-        return response.json().get("error", "request_failed")
-    except ValueError:
-        return "request_failed"
-
-
 def _load_user_detail(token: str, username: str) -> dict | None:
-    try:
-        response = requests.get(
-            f"{BACKEND_URL}/api/admin/user/{username}",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=15,
-        )
-        response.raise_for_status()
-        result = response.json()
-    except requests.HTTPError as error:
-        if error.response is not None:
-            st.error(_error_code(error.response))
-        else:
-            st.error("用户详情请求失败")
-        return None
-    except requests.RequestException:
-        st.error("用户详情服务暂不可用，请稍后重试")
-        return None
-    except ValueError:
-        st.error("用户详情服务返回的数据格式不正确")
-        return None
-
-    if isinstance(result, dict) and result.get("error"):
-        st.error(str(result["error"]))
+    result = api_request(
+        "GET",
+        f"/api/admin/user/{username}",
+        token=token,
+        success_message="用户详情加载成功",
+    )
+    if result is None:
         return None
 
     if isinstance(result, dict) and isinstance(result.get("data"), dict):
@@ -93,7 +68,8 @@ if not username:
         st.switch_page("admin_users.py")
     st.stop()
 
-user_data = _load_user_detail(admin_token, username)
+with st.spinner("正在加载用户详情..."):
+    user_data = _load_user_detail(admin_token, username)
 if user_data is not None:
     displayed_fields = set()
 

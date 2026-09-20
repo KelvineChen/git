@@ -1,8 +1,6 @@
-import requests
 import streamlit as st
 
-
-BACKEND_URL = "http://127.0.0.1:8000"
+from api_client import api_request
 
 LOGIN_ERROR_MESSAGES = {
     "admin_not_found": "管理员不存在",
@@ -44,35 +42,19 @@ if submitted:
     if not admin_name.strip() or not admin_password or not user_password:
         st.warning("请填写完整的登录信息")
     else:
-        try:
-            response = requests.post(
-                f"{BACKEND_URL}/api/admin/login",
+        with st.spinner("正在登录..."):
+            result = api_request(
+                "POST",
+                "/api/admin/login",
                 json={
                     "admin_name": admin_name.strip(),
                     "admin_password": admin_password,
                     "user_password": user_password,
                 },
-                timeout=15,
+                success_message="管理员登录成功",
+                error_messages=LOGIN_ERROR_MESSAGES,
             )
-            response.raise_for_status()
-            result = response.json()
-        except requests.HTTPError as error:
-            try:
-                error_code = error.response.json().get("error")
-            except (AttributeError, ValueError):
-                error_code = None
-
-            st.error(
-                LOGIN_ERROR_MESSAGES.get(
-                    error_code,
-                    "管理员登录失败，请稍后重试",
-                )
-            )
-        except requests.RequestException:
-            st.error("登录服务暂不可用，请稍后重试")
-        except ValueError:
-            st.error("登录服务返回的数据格式不正确")
-        else:
+        if result:
             token = result.get("token")
             if not token:
                 error_code = result.get("error")

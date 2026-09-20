@@ -1,15 +1,6 @@
-import requests
 import streamlit as st
 
-
-BACKEND_URL = "http://127.0.0.1:8000"
-
-
-def _error_code(response: requests.Response) -> str:
-    try:
-        return response.json().get("error", "request_failed")
-    except ValueError:
-        return "request_failed"
+from api_client import api_request
 
 
 def _extract_competitions(result: object) -> list[dict]:
@@ -38,30 +29,14 @@ def _load_competitions(
         else "/api/admin/competitions"
     )
 
-    try:
-        response = requests.get(
-            f"{BACKEND_URL}{path}",
-            headers={"Authorization": f"Bearer {token}"},
-            params=params if search else None,
-            timeout=15,
-        )
-        response.raise_for_status()
-        result = response.json()
-    except requests.HTTPError as error:
-        if error.response is not None:
-            st.error(_error_code(error.response))
-        else:
-            st.error("竞赛列表请求失败")
-        return None
-    except requests.RequestException:
-        st.error("竞赛管理服务暂不可用，请稍后重试")
-        return None
-    except ValueError:
-        st.error("竞赛管理服务返回的数据格式不正确")
-        return None
-
-    if isinstance(result, dict) and result.get("error"):
-        st.error(str(result["error"]))
+    result = api_request(
+        "GET",
+        path,
+        token=token,
+        params=params if search else None,
+        success_message="竞赛列表加载成功",
+    )
+    if result is None:
         return None
 
     return _extract_competitions(result)
@@ -90,17 +65,15 @@ with col2:
 
 search_submitted = st.button("搜索", type="primary")
 
-if search_submitted:
-    competitions = _load_competitions(
-        admin_token,
-        search=True,
-        params={
-            "title": title.strip(),
-            "creator": creator.strip(),
-        },
-    )
-else:
-    competitions = _load_competitions(admin_token)
+with st.spinner("正在加载竞赛列表..."):
+    if search_submitted:
+        competitions = _load_competitions(
+            admin_token,
+            search=True,
+            params={"title": title.strip(), "creator": creator.strip()},
+        )
+    else:
+        competitions = _load_competitions(admin_token)
 
 if competitions is None:
     st.stop()
