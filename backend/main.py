@@ -1,6 +1,11 @@
+import hashlib
 import re
+import secrets
+from uuid import uuid4
 
-from fastapi import Depends, FastAPI
+import bcrypt
+from fastapi import Depends, FastAPI, Header
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -23,6 +28,7 @@ from database import (
 )
 
 app = FastAPI()
+ADMIN_TOKENS: set[str] = set()
 
 
 @app.on_event("startup")
@@ -39,6 +45,32 @@ def health_check():
 
 class ProfileRequest(BaseModel):
     raw_text: str
+
+
+class AuthRegisterRequest(BaseModel):
+    username: str
+    password: str
+    confirm_password: str
+    email: str
+    school: str
+    major: str
+    grade: str
+
+
+class AuthLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class AdminLoginRequest(BaseModel):
+    admin_name: str
+    admin_password: str
+    user_password: str
+
+
+class AdminReviewActionRequest(BaseModel):
+    admin_name: str
+    action: str
 
 
 class MatchRequest(BaseModel):
@@ -70,6 +102,463 @@ class CreateProjectRequest(BaseModel):
     raw_text: str
     parsed_data: dict
     scope: str = "same_school"
+
+
+def _hash_password(password: str) -> str:
+    """Hash a password with a per-user salt for database storage."""
+    iterations = 600_000
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        iterations,
+    )
+    return f"pbkdf2_sha256${iterations}${salt.hex()}${digest.hex()}"
+
+
+def _verify_password(password: str, password_hash: str | None) -> bool:
+    """Verify a password against the stored PBKDF2 hash."""
+    if not password_hash:
+        return False
+
+    try:
+        algorithm, iterations_text, salt_text, digest_text = password_hash.split("$")
+        if algorithm != "pbkdf2_sha256":
+            return False
+
+        iterations = int(iterations_text)
+        salt = bytes.fromhex(salt_text)
+        expected_digest = bytes.fromhex(digest_text)
+        actual_digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt,
+            iterations,
+        )
+        return secrets.compare_digest(actual_digest, expected_digest)
+    except (TypeError, ValueError):
+        return False
+
+
+def _verify_bcrypt_password(password: str, password_hash: str | None) -> bool:
+    if not password_hash:
+        return False
+    try:
+        return bcrypt.checkpw(
+            password.encode("utf-8"),
+            password_hash.encode("utf-8"),
+        )
+    except (ValueError, TypeError):
+        return False
+
+
+@app.post("/api/auth/register")
+def auth_register(
+    request: AuthRegisterRequest,
+    db: Session = Depends(get_db),
+):
+    username = request.username.strip()
+    email = request.email.strip()
+    school = request.school.strip()
+    major = request.major.strip()
+    grade = request.grade.strip()
+
+    if request.password != request.confirm_password:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "password_mismatch"},
+        )
+
+    if not username or not email or not request.password.strip():
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_input"},
+        )
+
+    existing_username = db.scalar(
+        select(User).where(User.username == username)
+    )
+    if existing_username:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "username_taken"},
+        )
+
+    existing_email = db.scalar(select(User).where(User.email == email))
+    if existing_email:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "email_taken"},
+        )
+
+    user = User(
+        username=username,
+        email=email,
+        password_hash=_hash_password(request.password),
+        school=school,
+        major=major,
+        grade=grade,
+    )
+    try:
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    except IntegrityError:
+        db.rollback()
+        return JSONResponse(
+            status_code=400,
+            content={"error": "registration_failed"},
+        )
+    except SQLAlchemyError:
+        db.rollback()
+        return JSONResponse(
+            status_code=500,
+            content={"error": "registration_failed"},
+        )
+
+    return {"status": "ok"}
+
+
+@app.post("/api/auth/login")
+def auth_login(
+    request: AuthLoginRequest,
+    db: Session = Depends(get_db),
+):
+    username = request.username.strip()
+
+    user = db.scalar(select(User).where(User.username == username))
+    if not user:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "user_not_found"},
+        )
+
+    if not _verify_password(request.password, user.password_hash):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_password"},
+        )
+
+    token = str(uuid4())
+    return {
+        "status": "ok",
+        "token": token,
+        "user_id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "school": user.school,
+    }
+
+
+@app.post("/api/admin/login")
+def admin_login(
+    request: AdminLoginRequest,
+    db: Session = Depends(get_db),
+):
+    admin_name = request.admin_name.strip()
+    admin = db.scalar(
+        select(User).where(
+            (User.admin_name == admin_name) | (User.username == admin_name)
+        )
+    )
+    if not admin or admin.role != "admin":
+        return JSONResponse(
+            status_code=400,
+            content={"error": "admin_not_found"},
+        )
+
+    if not _verify_bcrypt_password(
+        request.admin_password,
+        admin.admin_password_hash,
+    ):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_admin_password"},
+        )
+
+    if not _verify_bcrypt_password(
+        request.user_password,
+        admin.user_password_hash,
+    ):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_user_password"},
+        )
+
+    if admin.admin_status != "approved":
+        return JSONResponse(
+            status_code=400,
+            content={"error": "admin_not_approved"},
+        )
+
+    token = str(uuid4())
+    ADMIN_TOKENS.add(token)
+    return {
+        "status": "ok",
+        "token": token,
+        "admin_name": admin.admin_name or admin.username,
+        "admin_status": admin.admin_status,
+    }
+
+
+def _require_admin_token(authorization: str | None) -> str | None:
+    if not authorization or not authorization.startswith("Bearer "):
+        return "admin_token_required"
+
+    token = authorization.removeprefix("Bearer ").strip()
+    if token not in ADMIN_TOKENS:
+        return "invalid_admin_token"
+
+    return None
+
+
+def _admin_auth_response(authorization: str | None) -> JSONResponse | None:
+    error = _require_admin_token(authorization)
+    if error:
+        return JSONResponse(status_code=401, content={"error": error})
+    return None
+
+
+def _server_error() -> JSONResponse:
+    return JSONResponse(status_code=500, content={"error": "server_error"})
+
+
+def _serialize_user(user: User) -> dict:
+    return {
+        "username": user.username,
+        "email": user.email,
+        "school": user.school,
+        "major": user.major,
+        "grade": user.grade,
+        "role": user.role,
+        "created_at": user.created_at.isoformat(),
+    }
+
+
+@app.get("/api/admin/users")
+def admin_users(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+
+    try:
+        users = db.scalars(select(User).order_by(User.created_at.desc())).all()
+        return [_serialize_user(user) for user in users]
+    except Exception:
+        return _server_error()
+
+
+@app.get("/api/admin/users/search")
+def admin_users_search(
+    username: str = "",
+    school: str = "",
+    major: str = "",
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+
+    try:
+        conditions = []
+        if username.strip():
+            conditions.append(User.username.ilike(f"%{username.strip()}%"))
+        if school.strip():
+            conditions.append(User.school.ilike(f"%{school.strip()}%"))
+        if major.strip():
+            conditions.append(User.major.ilike(f"%{major.strip()}%"))
+
+        statement = select(User).order_by(User.created_at.desc())
+        if conditions:
+            statement = statement.where(*conditions)
+        users = db.scalars(statement).all()
+        return [_serialize_user(user) for user in users]
+    except Exception:
+        return _server_error()
+
+
+def _serialize_competition(project: Project) -> dict:
+    return {
+        "id": project.id,
+        "title": project.name,
+        "creator": project.owner.username if project.owner else "",
+        "description": project.raw_text or "",
+        "created_at": project.created_at.isoformat(),
+    }
+
+
+@app.get("/api/admin/competitions")
+def admin_competitions(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+
+    try:
+        projects = db.scalars(
+            select(Project).order_by(Project.created_at.desc())
+        ).all()
+        return [_serialize_competition(project) for project in projects]
+    except Exception:
+        return _server_error()
+
+
+@app.get("/api/admin/competitions/search")
+def admin_competitions_search(
+    title: str = "",
+    creator: str = "",
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+
+    try:
+        statement = (
+            select(Project)
+            .join(User, Project.owner_id == User.id)
+            .order_by(Project.created_at.desc())
+        )
+        if title.strip():
+            statement = statement.where(
+                Project.name.ilike(f"%{title.strip()}%")
+            )
+        if creator.strip():
+            statement = statement.where(
+                User.username.ilike(f"%{creator.strip()}%")
+            )
+
+        projects = db.scalars(statement).all()
+        return [_serialize_competition(project) for project in projects]
+    except Exception:
+        return _server_error()
+
+
+@app.get("/api/admin/review/list")
+def admin_review_list(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+
+    try:
+        statement = (
+            select(User)
+            .where(
+                User.role == "admin",
+                User.admin_status == "pending",
+            )
+            .order_by(User.created_at.asc())
+        )
+        admins = db.scalars(statement).all()
+        return [
+            {
+                "admin_name": admin.admin_name or admin.username,
+                "username": admin.username,
+                "created_at": admin.created_at.isoformat(),
+                "admin_status": admin.admin_status,
+            }
+            for admin in admins
+        ]
+    except Exception:
+        return _server_error()
+
+
+@app.post("/api/admin/review/action")
+def admin_review_action(
+    request: AdminReviewActionRequest,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+
+    action = request.action.strip().lower()
+    if action not in {"approve", "reject"}:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_action"},
+        )
+
+    try:
+        admin = db.scalar(
+            select(User).where(
+                User.role == "admin",
+                (User.admin_name == request.admin_name.strip())
+                | (User.username == request.admin_name.strip()),
+            )
+        )
+        if not admin:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "admin_not_found"},
+            )
+
+        admin.admin_status = "approved" if action == "approve" else "rejected"
+        db.commit()
+        return {
+            "status": "ok",
+            "admin_name": admin.admin_name or admin.username,
+            "admin_status": admin.admin_status,
+        }
+    except Exception:
+        db.rollback()
+        return _server_error()
+
+
+@app.get("/api/admin/user/{username}")
+def admin_user_detail(
+    username: str,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+
+    try:
+        user = db.scalar(select(User).where(User.username == username))
+        if not user:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "user_not_found"},
+            )
+        return _serialize_user(user)
+    except Exception:
+        return _server_error()
+
+
+@app.get("/api/admin/competition/{competition_id}")
+def admin_competition_detail(
+    competition_id: int,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+
+    try:
+        project = db.get(Project, competition_id)
+        if not project:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "competition_not_found"},
+            )
+        return _serialize_competition(project)
+    except Exception:
+        return _server_error()
 
 
 @app.post("/api/register")
