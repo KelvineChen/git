@@ -40,6 +40,11 @@ class User(Base):
     username: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
     email: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
     password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    admin_name: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True)
+    admin_password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    user_password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    role: Mapped[str] = mapped_column(String(30), default="user", nullable=False)
+    admin_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
     school: Mapped[str | None] = mapped_column(String, nullable=True)
     major: Mapped[str | None] = mapped_column(String, nullable=True)
     grade: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -131,13 +136,27 @@ def init_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
 
-    # Keep existing SQLite databases compatible after adding password storage.
+    # Keep existing SQLite databases compatible after adding auth fields.
     user_columns = {column["name"] for column in inspect(engine).get_columns("users")}
-    if "password_hash" not in user_columns:
+    migrations = {
+        "password_hash": "VARCHAR(255)",
+        "admin_name": "VARCHAR(100)",
+        "admin_password_hash": "VARCHAR(255)",
+        "user_password_hash": "VARCHAR(255)",
+        "role": "VARCHAR(30) DEFAULT 'user'",
+        "admin_status": "VARCHAR(30)",
+    }
+    missing_columns = [
+        (name, column_type)
+        for name, column_type in migrations.items()
+        if name not in user_columns
+    ]
+    if missing_columns:
         with engine.begin() as connection:
-            connection.execute(
-                text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(255)")
-            )
+            for name, column_type in missing_columns:
+                connection.execute(
+                    text(f"ALTER TABLE users ADD COLUMN {name} {column_type}")
+                )
 
 
 def get_db() -> Generator[Session, None, None]:
