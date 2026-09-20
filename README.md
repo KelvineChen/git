@@ -8,13 +8,24 @@
 
 ### 账号与数据持久化
 
-- 用户注册：用户名、邮箱、学校、专业、年级
-- 邮箱登录及 Streamlit 会话状态
+- 用户注册：用户名、邮箱、密码、学校、专业、年级
+- 使用用户名和密码登录，Streamlit 保存当前会话
+- 普通用户密码使用 PBKDF2-HMAC-SHA256、随机盐和 600000 次迭代后存储
+- 密码至少 8 位，注册时校验两次输入
 - SQLite + SQLAlchemy 持久化
 - 数据库文件：`backend/app.db`
 - 后端启动时自动创建缺失的数据表
 
-当前登录是原型简化方案，只使用邮箱，不包含密码或身份验证令牌。
+旧版无密码注册和登录接口已经移除，避免绕过密码验证。登录会返回 token；当前普通用户 token 尚未覆盖全部业务接口鉴权，因此仍属于原型认证。
+
+### 管理员后台
+
+- 独立的管理员注册、登录和多页面管理端
+- 管理员申请默认处于 `pending`，需已批准管理员审核
+- 支持用户列表、搜索、详情以及项目列表和项目详情
+- 管理员密码与二级密码分别使用 bcrypt 哈希
+- 管理接口使用 Bearer token 验证
+- 初始管理员密码从环境变量读取，不硬编码在源码中
 
 ### 我的画像
 
@@ -50,7 +61,7 @@
 - 项目发起人标记对候选用户感兴趣
 - 判断双方是否达成双向意向
 
-前端“感兴趣”按钮目前仍是提示状态，尚未接入这些接口；发起人候选列表和双向确认页面也尚未实现。
+前端“感兴趣”按钮已经接入接口，成功后持久化状态并禁用重复点击。发起人候选列表和双向确认页面尚未接入普通用户前端。
 
 ## 匹配算法
 
@@ -103,6 +114,7 @@ total_score = skill_match × 0.6
 - AI：OpenAI Python SDK 兼容接口
 - 默认模型：`qwen-plus`
 - HTTP：Requests
+- 密码哈希：PBKDF2-HMAC-SHA256、bcrypt
 
 ## 项目结构
 
@@ -114,9 +126,11 @@ total_score = skill_match × 0.6
 │   ├── database.py      # 数据库连接、会话和初始化
 │   ├── models.py        # SQLAlchemy 数据模型
 │   ├── app.db           # SQLite 数据库
+│   ├── init_admin.py    # 从环境变量创建初始管理员
 │   └── requirements.txt
 ├── frontend/
-│   └── app.py           # Streamlit 页面
+│   └── app.py           # Streamlit 用户端
+├── frontend_admin/      # Streamlit 管理员端
 ├── data/
 │   └── zhilink.db       # 旧数据库迁移备份
 └── README.md
@@ -153,6 +167,15 @@ $env:LLM_MODEL = "qwen-plus"
 
 不要将真实 API Key 写入代码或提交到 Git。
 
+创建初始管理员：
+
+```powershell
+$env:INITIAL_ADMIN_PASSWORD = "至少8位的管理员密码"
+$env:INITIAL_ADMIN_USER_PASSWORD = "至少8位的二级密码"
+cd C:\Users\zhang\Desktop\知遇LinkLab\backend
+python init_admin.py
+```
+
 ## 启动方式
 
 后端：
@@ -169,9 +192,17 @@ cd C:\Users\zhang\Desktop\知遇LinkLab\frontend
 streamlit run app.py
 ```
 
+管理员端：
+
+```powershell
+cd C:\Users\zhang\Desktop\知遇LinkLab\frontend_admin
+streamlit run admin_app.py --server.port 8502
+```
+
 访问地址：
 
 - 前端：<http://localhost:8501>
+- 管理员端：<http://localhost:8502>
 - 健康检查：<http://localhost:8000/api/health>
 - Swagger：<http://localhost:8000/docs>
 
@@ -180,8 +211,11 @@ streamlit run app.py
 | 方法 | 路径 | 功能 |
 | --- | --- | --- |
 | GET | `/api/health` | 健康检查 |
-| POST | `/api/register` | 注册 |
-| POST | `/api/login` | 邮箱登录 |
+| POST | `/api/auth/register` | 用户密码注册 |
+| POST | `/api/auth/login` | 用户名密码登录 |
+| POST | `/api/admin/register` | 管理员注册申请 |
+| POST | `/api/admin/login` | 管理员登录 |
+| GET/POST | `/api/admin/*` | 管理员查询与审核接口 |
 | POST | `/api/parse_profile` | AI 解析用户画像 |
 | POST | `/api/save_profile` | 保存或更新画像 |
 | GET | `/api/profile/{user_id}` | 获取画像 |
@@ -195,27 +229,32 @@ streamlit run app.py
 | GET | `/api/interested_users/{project_id}` | 查询感兴趣用户 |
 | POST | `/api/owner_interest` | 发起人标记候选人 |
 | POST | `/api/check_mutual` | 检查双向意向 |
+| POST | `/api/project_status` | 更新项目状态 |
+| DELETE | `/api/project/{project_id}` | 删除项目及关联数据 |
 
 ## 快速验收
 
 1. 打开健康检查，确认返回 `{"status":"ok"}`。
-2. 注册两个不同学校的账号，验证邮箱登录。
+2. 注册两个不同学校的账号，验证正确密码可登录、错误密码被拒绝。
 3. 为一个账号解析并保存画像，刷新后确认数据仍存在。
 4. 用另一个账号发布项目，在“我的项目”中展开查看详情。
 5. 回到候选账号，在“匹配推荐”切换同校和跨校范围。
 6. 确认项目按总分排序，并显示三项进度条及解释。
 7. 在 Swagger 中测试意向接口和双向确认接口。
+8. 创建初始管理员，在管理员端验证登录、用户和项目查询。
 
 ## 当前不完整项
 
 这是可以完整演示核心价值的毛胚版本，但距离正式产品仍有以下差距：
 
-- 前端“感兴趣”按钮尚未调用 `POST /api/interest`
 - 尚无发起人查看候选人、标记意向和双向成功的前端页面
-- 登录没有密码、Token、权限校验和账号安全机制
-- 后端目前无法验证调用 `owner_interest` 的请求者确实是项目发起人
-- 缺少取消意向、关闭项目、编辑项目和删除项目
-- 缺少数据库迁移工具、唯一约束补强和系统化自动测试
+- 普通用户 token 尚未应用到全部业务接口，部分接口仍依赖请求中的 `user_id/owner_id`
+- 旧版无密码用户没有自动迁移密码，需要补充设置或重置密码流程
+- 缺少找回密码、修改密码、令牌过期和撤销机制
+- 管理员 token 保存在进程内存中，服务重启后失效且多实例不能共享
+- 缺少取消意向和项目编辑；状态更新及删除已有后端接口但未接入前端
+- 当前 SQLite 加列逻辑是轻量迁移方案，正式版本应使用 Alembic
+- 缺少持续运行的系统化自动测试
 - AI 推荐存在非确定性，批量推荐的技能相关调用仍可能较慢
 - 时间只处理带小时单位的单一周投入表达
 - 匹配参数尚未用真实合作结果进行离线评估和校准
