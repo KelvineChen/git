@@ -1,11 +1,12 @@
 import json
+import os
 import re
 
 import requests
 import streamlit as st
 
 
-BACKEND_URL = "http://127.0.0.1:8000"
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
 
 
 def post_api(

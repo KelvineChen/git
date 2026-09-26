@@ -1,7 +1,32 @@
+# Python caches and compiled files
 __pycache__/
-*.pyc
-*.log
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Local environments and secrets
 .env
-data/*.db
-backend/*.db
+.env.*
+!.env.example
 .venv/
+venv/
+env/
+ENV/
+
+# Local databases and runtime logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# IDE and temporary files
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.idea/
+.vscode/
+*.tmp
+*.temp
+*~
+tempCodeRunnerFile.py
+**/tempCodeRunnerFile.py
