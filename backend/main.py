@@ -20,7 +20,7 @@ from ai_service import (
     parse_project_requirement,
     parse_user_profile,
 )
-from database import Base, engine, get_db, init_db
+from database import DATABASE_URL, get_db, init_db
 from models import (
     MatchRecord,
     OwnerInterest,
@@ -30,15 +30,14 @@ from models import (
     UserProfile,
 )
 
-Base.metadata.create_all(bind=engine)
-
 app = FastAPI()
 ADMIN_TOKENS: set[str] = set()
 
 
 @app.on_event("startup")
 def startup_event() -> None:
-    init_db()
+    if DATABASE_URL.startswith("sqlite"):
+        init_db()
 
 @app.get("/")
 def root():

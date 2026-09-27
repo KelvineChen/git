@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Generator
+import os
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
@@ -7,11 +8,18 @@ from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 BACKEND_DIR = Path(__file__).resolve().parent
 DATABASE_PATH = BACKEND_DIR / "app.db"
-DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    f"sqlite:///{DATABASE_PATH.as_posix()}",
+)
+
+connect_args = {}
+if DATABASE_URL.startswith("sqlite"):
+    connect_args["check_same_thread"] = False
 
 engine = create_engine(
     DATABASE_URL,
-    connect_args={"check_same_thread": False},
+    connect_args=connect_args,
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 Base = declarative_base()

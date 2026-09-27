@@ -3,7 +3,8 @@
 import bcrypt
 from sqlalchemy import select
 
-from database import SessionLocal, User, init_db
+from database import SessionLocal, init_db
+from models import User
 
 
 ADMIN_NAME = "KelvineChen"

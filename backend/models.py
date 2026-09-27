@@ -15,6 +15,12 @@ class User(Base):
     school: Mapped[str | None] = mapped_column(String, nullable=True)
     major: Mapped[str | None] = mapped_column(String, nullable=True)
     grade: Mapped[str | None] = mapped_column(String, nullable=True)
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    admin_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    admin_password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    user_password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    role: Mapped[str] = mapped_column(String(30), default="user", nullable=False)
+    admin_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
     profile: Mapped["UserProfile | None"] = relationship(back_populates="user")

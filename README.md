@@ -199,6 +199,119 @@ cd C:\Users\zhang\Desktop\知遇LinkLab\frontend_admin
 streamlit run admin_app.py --server.port 8502
 ```
 
+## 云平台启动配置
+
+### FastAPI 后端（Render）
+
+仓库根目录提供了 `render.yaml`。手动创建 Render Web Service 时使用：
+
+```text
+Root Directory: backend
+Build Command: pip install -r requirements.txt
+Pre-Deploy Command: alembic upgrade head
+Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
+Health Check Path: /api/health
+```
+
+`preDeployCommand` 在新版本发布前执行数据库迁移。迁移返回非零状态时，
+Render 会将部署标记为失败，不会用新版本启动应用。不要把
+`alembic upgrade head` 拼接进 `Start Command`，否则每次服务重启都会重复执行迁移。
+
+后端必须配置以下环境变量：
+
+```text
+DATABASE_URL=postgresql+psycopg2://user:password@host:5432/database
+LLM_API_KEY=你的 DashScope API Key
+LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+LLM_MODEL=qwen-plus
+```
+
+Render 提供的 PostgreSQL 地址如果以 `postgresql://` 开头，可以改为
+`postgresql+psycopg2://`。不要提交真实数据库密码或 API Key。
+
+### Streamlit 用户端（Streamlit Community Cloud）
+
+```text
+Repository: 当前 GitHub 仓库
+Branch: main
+Main file path: frontend/app.py
+Root Directory: 仓库根目录（Streamlit Cloud 通过 Main file path 定位）
+Build Command: 平台自动执行 pip install -r frontend/requirements.txt
+Start Command: 平台自动执行 streamlit run frontend/app.py
+```
+
+在 Streamlit Secrets 或应用环境配置中设置：
+
+```text
+BACKEND_URL=https://你的-Render-后端地址
+```
+
+### Streamlit 管理端（Streamlit Community Cloud）
+
+创建第二个 Streamlit 应用：
+
+```text
+Repository: 当前 GitHub 仓库
+Branch: main
+Main file path: frontend_admin/admin_app.py
+Root Directory: 仓库根目录
+Build Command: 平台自动执行 pip install -r frontend_admin/requirements.txt
+Start Command: 平台自动执行 streamlit run frontend_admin/admin_app.py
+```
+
+同样设置：
+
+```text
+BACKEND_URL=https://你的-Render-后端地址
+```
+
+### 数据库迁移
+
+Alembic 配置位于 `backend/alembic.ini`，迁移文件位于
+`backend/alembic/versions/`。命令必须在 `backend` 目录执行：
+
+```powershell
+cd C:\Users\zhang\Desktop\知遇LinkLab\backend
+alembic upgrade head
+```
+
+新建迁移的开发流程：
+
+```powershell
+alembic revision --autogenerate -m "describe schema change"
+alembic upgrade head
+```
+
+现有 `app.db` 已由旧版代码创建表，不能直接执行初始建表迁移。备份并确认
+表结构与初始迁移一致后，可执行 `alembic stamp head` 只记录当前版本；新建的
+SQLite 或 PostgreSQL 空库应执行 `alembic upgrade head`。
+
+### 本地模拟生产启动
+
+PowerShell 中分别启动三个服务：
+
+```powershell
+cd C:\Users\zhang\Desktop\知遇LinkLab\backend
+$env:PORT = "8000"
+alembic upgrade head
+uvicorn main:app --host 0.0.0.0 --port $env:PORT
+```
+
+```powershell
+cd C:\Users\zhang\Desktop\知遇LinkLab\frontend
+$env:BACKEND_URL = "http://localhost:8000"
+streamlit run app.py --server.address 0.0.0.0 --server.port 8501
+```
+
+```powershell
+cd C:\Users\zhang\Desktop\知遇LinkLab\frontend_admin
+$env:BACKEND_URL = "http://localhost:8000"
+streamlit run admin_app.py --server.address 0.0.0.0 --server.port 8502
+```
+
+本地继续使用已有 `backend/app.db` 时，应先按上一节执行一次
+`alembic stamp head`，不要对已经存在表的数据库直接运行初始迁移。
+
 访问地址：
 
 - 前端：<http://localhost:8501>
