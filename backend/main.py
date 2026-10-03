@@ -108,6 +108,13 @@ class InterestRequest(BaseModel):
     project_id: int
 
 
+class OwnerCandidateActionRequest(BaseModel):
+    owner_id: int
+    user_id: int
+    project_id: int
+    action: str
+
+
 class ProjectStatusRequest(BaseModel):
     owner_id: int
     project_id: int
@@ -785,8 +792,138 @@ def get_profile(user_id: int, db: Session = Depends(get_db)):
     }
 
 
+@app.get("/api/projects")
+def list_projects(
+    keyword: str = "",
+    school: str = "",
+    project_type: str = "",
+    skill: str = "",
+    scope: str = "",
+    status: str = "recruiting",
+    sort: str = "latest",
+    page: int = 1,
+    page_size: int = 12,
+    user_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    """Return a filterable public project directory."""
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 50)
+    allowed_scopes = {"", "same_school", "cross_school"}
+    allowed_statuses = {"all", "recruiting", "full", "closed", "completed"}
+    allowed_sorts = {"latest", "match"}
+    if scope not in allowed_scopes:
+        return {"success": False, "message": "开放范围筛选无效"}
+    if status not in allowed_statuses:
+        return {"success": False, "message": "项目状态筛选无效"}
+    if sort not in allowed_sorts:
+        return {"success": False, "message": "排序方式无效"}
+
+    rows = db.execute(
+        select(Project, ProjectProfile, User)
+        .outerjoin(ProjectProfile, ProjectProfile.project_id == Project.id)
+        .join(User, User.id == Project.owner_id)
+    ).all()
+
+    match_records: dict[int, MatchRecord] = {}
+    if user_id is not None:
+        match_records = {
+            record.project_id: record
+            for record in db.scalars(
+                select(MatchRecord).where(MatchRecord.user_id == user_id)
+            ).all()
+        }
+
+    keyword_value = keyword.strip().casefold()
+    school_value = school.strip().casefold()
+    type_value = project_type.strip().casefold()
+    skill_value = skill.strip().casefold()
+    projects = []
+
+    for project, profile, owner in rows:
+        required_skills = profile.required_skills if profile else []
+        searchable = " ".join(
+            (
+                project.name or "",
+                project.raw_text or "",
+                profile.background if profile else "",
+                profile.project_type if profile else "",
+                owner.school or "",
+                " ".join(str(item) for item in required_skills),
+            )
+        ).casefold()
+        if keyword_value and keyword_value not in searchable:
+            continue
+        if school_value and school_value not in (owner.school or "").casefold():
+            continue
+        profile_type = profile.project_type if profile else ""
+        if type_value and type_value not in (profile_type or "").casefold():
+            continue
+        if skill_value and not any(
+            skill_value in str(item).casefold() for item in required_skills
+        ):
+            continue
+        if scope and project.scope != scope:
+            continue
+        if status != "all" and project.status != status:
+            continue
+
+        record = match_records.get(project.id)
+        projects.append(
+            {
+                "project_id": project.id,
+                "name": project.name,
+                "owner_id": project.owner_id,
+                "owner_username": owner.username,
+                "owner_school": owner.school or "",
+                "raw_text": project.raw_text or "",
+                "status": project.status,
+                "scope": project.scope,
+                "created_at": project.created_at,
+                "required_skills": required_skills,
+                "time_requirement": profile.time_requirement if profile else "未知",
+                "priority": profile.priority if profile else [],
+                "project_type": profile.project_type if profile else "",
+                "background": profile.background if profile else "",
+                "total_score": record.total_score if record else None,
+                "interested": bool(record and record.status == "interested"),
+            }
+        )
+
+    if sort == "match":
+        projects.sort(
+            key=lambda item: (
+                item["total_score"] is not None,
+                item["total_score"] or 0,
+                item["created_at"],
+            ),
+            reverse=True,
+        )
+    else:
+        projects.sort(key=lambda item: item["created_at"], reverse=True)
+
+    total = len(projects)
+    start = (page - 1) * page_size
+    paginated = projects[start : start + page_size]
+    total_pages = max((total + page_size - 1) // page_size, 1)
+    return {
+        "success": True,
+        "projects": paginated,
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+        },
+    }
+
+
 @app.get("/api/project/{project_id}")
-def get_project(project_id: int, db: Session = Depends(get_db)):
+def get_project(
+    project_id: int,
+    user_id: int | None = None,
+    db: Session = Depends(get_db),
+):
     project = db.get(Project, project_id)
     if not project:
         return {"success": False, "message": "项目不存在"}
@@ -794,10 +931,25 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
     profile = db.scalar(
         select(ProjectProfile).where(ProjectProfile.project_id == project_id)
     )
+    owner = db.get(User, project.owner_id)
+    match_record = (
+        db.scalar(
+            select(MatchRecord).where(
+                MatchRecord.user_id == user_id,
+                MatchRecord.project_id == project_id,
+            )
+        )
+        if user_id is not None
+        else None
+    )
     return {
         "success": True,
         "project_id": project.id,
         "owner_id": project.owner_id,
+        "owner_username": owner.username if owner else "",
+        "owner_school": owner.school if owner else "",
+        "owner_major": owner.major if owner else "",
+        "owner_grade": owner.grade if owner else "",
         "name": project.name,
         "raw_text": project.raw_text,
         "status": project.status,
@@ -809,6 +961,7 @@ def get_project(project_id: int, db: Session = Depends(get_db)):
         "project_type": profile.project_type if profile else "",
         "background": profile.background if profile else "",
         "updated_at": profile.updated_at if profile else None,
+        "interested": bool(match_record and match_record.status == "interested"),
     }
 
 
@@ -851,8 +1004,13 @@ def get_my_projects(user_id: int, db: Session = Depends(get_db)):
 def mark_interest(request: InterestRequest, db: Session = Depends(get_db)):
     if db.get(User, request.user_id) is None:
         return {"success": False, "message": "用户不存在"}
-    if db.get(Project, request.project_id) is None:
+    project = db.get(Project, request.project_id)
+    if project is None:
         return {"success": False, "message": "项目不存在"}
+    if project.owner_id == request.user_id:
+        return {"success": False, "message": "不能对自己发布的项目表达感兴趣"}
+    if project.status != "recruiting":
+        return {"success": False, "message": "该项目当前不接受新的申请"}
 
     records = db.scalars(
         select(MatchRecord)
@@ -939,6 +1097,169 @@ def get_interested_users(project_id: int, db: Session = Depends(get_db)):
     return {"success": True, "users": users}
 
 
+@app.get("/api/project/{project_id}/candidates")
+def get_project_candidates(
+    project_id: int,
+    owner_id: int,
+    db: Session = Depends(get_db),
+):
+    """Return public candidate summaries for a project owner."""
+    project = db.get(Project, project_id)
+    if project is None:
+        return {"success": False, "message": "项目不存在"}
+    if project.owner_id != owner_id:
+        return {"success": False, "message": "无权查看该项目候选人"}
+
+    rows = db.execute(
+        select(User, UserProfile, MatchRecord, OwnerInterest)
+        .join(MatchRecord, MatchRecord.user_id == User.id)
+        .outerjoin(UserProfile, UserProfile.user_id == User.id)
+        .outerjoin(
+            OwnerInterest,
+            (OwnerInterest.project_id == project_id)
+            & (OwnerInterest.user_id == User.id),
+        )
+        .where(
+            MatchRecord.project_id == project_id,
+            MatchRecord.status == "interested",
+        )
+        .order_by(MatchRecord.total_score.desc(), User.id.asc())
+    ).all()
+
+    candidates = []
+    for user, profile, record, owner_interest in rows:
+        candidates.append(
+            {
+                "user_id": user.id,
+                "username": user.username,
+                "school": user.school or "",
+                "major": user.major or "",
+                "grade": user.grade or "",
+                "skills": profile.skills if profile else [],
+                "experience": profile.experience if profile else [],
+                "interests": profile.interests if profile else [],
+                "time_commitment": (
+                    profile.time_commitment if profile else "未知"
+                ),
+                "total_score": round(record.total_score, 3),
+                "skill_match": round(record.skill_match, 3),
+                "time_match": round(record.time_match, 3),
+                "experience_match": round(record.experience_match, 3),
+                "explanation": record.explanation or "暂无匹配解释",
+                "owner_status": (
+                    owner_interest.status if owner_interest else "pending"
+                ),
+                "owner_interested": bool(
+                    owner_interest and owner_interest.status == "interested"
+                ),
+                "mutual": bool(
+                    owner_interest and owner_interest.status == "interested"
+                ),
+            }
+        )
+    return {"success": True, "project_id": project_id, "candidates": candidates}
+
+
+@app.get("/api/my_matches/{user_id}")
+def get_my_matches(user_id: int, db: Session = Depends(get_db)):
+    if db.get(User, user_id) is None:
+        return {"success": False, "message": "用户不存在"}
+
+    rows = db.execute(
+        select(Project, ProjectProfile, User, MatchRecord, OwnerInterest)
+        .join(MatchRecord, MatchRecord.project_id == Project.id)
+        .join(User, User.id == Project.owner_id)
+        .outerjoin(ProjectProfile, ProjectProfile.project_id == Project.id)
+        .outerjoin(
+            OwnerInterest,
+            (OwnerInterest.project_id == Project.id)
+            & (OwnerInterest.user_id == user_id),
+        )
+        .where(
+            MatchRecord.user_id == user_id,
+            MatchRecord.status == "interested",
+        )
+        .order_by(MatchRecord.created_at.desc())
+    ).all()
+
+    matches = []
+    for project, profile, owner, record, owner_interest in rows:
+        owner_status = owner_interest.status if owner_interest else "pending"
+        relationship_status = {
+            "interested": "mutual",
+            "rejected": "owner_declined",
+        }.get(owner_status, "user_interested")
+        matches.append(
+            {
+                "project_id": project.id,
+                "project_name": project.name,
+                "project_status": project.status,
+                "owner_username": owner.username,
+                "owner_school": owner.school or "",
+                "scope": project.scope,
+                "required_skills": profile.required_skills if profile else [],
+                "time_requirement": profile.time_requirement if profile else "未知",
+                "total_score": round(record.total_score, 3),
+                "skill_match": round(record.skill_match, 3),
+                "time_match": round(record.time_match, 3),
+                "experience_match": round(record.experience_match, 3),
+                "explanation": record.explanation or "暂无匹配解释",
+                "relationship_status": relationship_status,
+                "created_at": record.created_at,
+            }
+        )
+    return {"success": True, "matches": matches}
+
+
+@app.post("/api/owner_candidate_action")
+def owner_candidate_action(
+    request: OwnerCandidateActionRequest,
+    db: Session = Depends(get_db),
+):
+    project = db.get(Project, request.project_id)
+    if project is None:
+        return {"success": False, "message": "项目不存在"}
+    if project.owner_id != request.owner_id:
+        return {"success": False, "message": "无权处理该项目候选人"}
+    if request.action not in {"interested", "rejected"}:
+        return {"success": False, "message": "候选人处理状态无效"}
+    candidate_interest = db.scalar(
+        select(MatchRecord.id).where(
+            MatchRecord.user_id == request.user_id,
+            MatchRecord.project_id == request.project_id,
+            MatchRecord.status == "interested",
+        )
+    )
+    if candidate_interest is None:
+        return {"success": False, "message": "该用户尚未对项目表达感兴趣"}
+
+    decision = db.scalar(
+        select(OwnerInterest).where(
+            OwnerInterest.project_id == request.project_id,
+            OwnerInterest.user_id == request.user_id,
+        )
+    )
+    if decision is None:
+        decision = OwnerInterest(
+            project_id=request.project_id,
+            user_id=request.user_id,
+            status=request.action,
+        )
+        db.add(decision)
+    else:
+        decision.status = request.action
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        return {"success": False, "message": "候选人状态保存失败"}
+    return {
+        "success": True,
+        "status": decision.status,
+        "mutual": decision.status == "interested",
+    }
+
+
 @app.post("/api/owner_interest")
 def mark_owner_interest(request: InterestRequest, db: Session = Depends(get_db)):
     project = db.get(Project, request.project_id)
@@ -948,6 +1269,15 @@ def mark_owner_interest(request: InterestRequest, db: Session = Depends(get_db))
         return {"success": False, "message": "用户不存在"}
     if project.owner_id == request.user_id:
         return {"success": False, "message": "不能标记项目发起人本人"}
+    candidate_interest = db.scalar(
+        select(MatchRecord.id).where(
+            MatchRecord.user_id == request.user_id,
+            MatchRecord.project_id == request.project_id,
+            MatchRecord.status == "interested",
+        )
+    )
+    if candidate_interest is None:
+        return {"success": False, "message": "该用户尚未对项目表达感兴趣"}
 
     existing = db.scalar(
         select(OwnerInterest).where(
@@ -960,6 +1290,7 @@ def mark_owner_interest(request: InterestRequest, db: Session = Depends(get_db))
             OwnerInterest(
                 project_id=request.project_id,
                 user_id=request.user_id,
+                status="interested",
             )
         )
         try:
@@ -967,6 +1298,9 @@ def mark_owner_interest(request: InterestRequest, db: Session = Depends(get_db))
         except IntegrityError:
             db.rollback()
             return {"success": False, "message": "发起人意向保存失败"}
+    else:
+        existing.status = "interested"
+        db.commit()
     return {"success": True}
 
 
@@ -986,10 +1320,14 @@ def check_mutual(request: InterestRequest, db: Session = Depends(get_db)):
         .where(
             OwnerInterest.project_id == request.project_id,
             OwnerInterest.user_id == request.user_id,
+            OwnerInterest.status == "interested",
         )
         .limit(1)
     )
-    return {"mutual": bool(user_interested and owner_interested)}
+    return {
+        "success": True,
+        "mutual": bool(user_interested and owner_interested),
+    }
 
 @app.post("/api/parse_profile")
 def parse_profile(request: ProfileRequest):

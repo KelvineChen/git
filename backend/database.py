@@ -51,6 +51,18 @@ def init_db() -> None:
                     text(f"ALTER TABLE users ADD COLUMN {name} {column_type}")
                 )
 
+    owner_interest_columns = {
+        column["name"] for column in inspect(engine).get_columns("owner_interests")
+    }
+    if "status" not in owner_interest_columns:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "ALTER TABLE owner_interests ADD COLUMN status "
+                    "VARCHAR(30) NOT NULL DEFAULT 'interested'"
+                )
+            )
+
 
 def get_db() -> Generator[Session, None, None]:
     """Yield one database session per request and always close it."""

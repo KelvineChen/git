@@ -114,6 +114,9 @@ class OwnerInterest(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id"), nullable=False, index=True
     )
+    status: Mapped[str] = mapped_column(
+        String(30), default="interested", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, nullable=False
     )

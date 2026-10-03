@@ -1,12 +1,214 @@
 import json
 import os
 import re
+from html import escape
+from urllib.parse import urlencode
 
 import requests
 import streamlit as st
 
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
+
+
+def inject_styles() -> None:
+    st.markdown(
+        """
+        <style>
+        :root {
+            color-scheme: light;
+            --ink: #16233b;
+            --muted: #667085;
+            --line: #e5eaf2;
+            --blue: #2764e7;
+            --blue-soft: #eef4ff;
+            --teal: #0b8f83;
+            --surface: #ffffff;
+            --canvas: #f5f7fb;
+        }
+
+        .stApp { background: var(--canvas); color: var(--ink); }
+        [data-testid="stHeader"] { background: transparent; }
+        [data-testid="stAppViewContainer"] p,
+        [data-testid="stAppViewContainer"] label,
+        [data-testid="stAppViewContainer"] span,
+        [data-testid="stWidgetLabel"] p {
+            color: var(--ink);
+        }
+        [data-testid="stSidebar"] {
+            background: #101a2e;
+            border-right: 0;
+        }
+        [data-testid="stSidebar"] p,
+        [data-testid="stSidebar"] span,
+        [data-testid="stSidebar"] label,
+        [data-testid="stSidebar"] h1,
+        [data-testid="stSidebar"] h2,
+        [data-testid="stSidebar"] h3 { color: #e8eefb !important; }
+        [data-testid="stSidebar"] .stRadio label { color: #cbd5e8; }
+        [data-testid="stSidebar"] .stRadio label:hover { color: #ffffff; }
+        [data-testid="stSidebar"] button {
+            color: #e8eefb !important;
+            background: #17243d !important;
+            border-color: #34435f !important;
+        }
+        .block-container { max-width: 1180px; padding-top: 2.5rem; padding-bottom: 4rem; }
+        h1, h2, h3 { color: var(--ink); letter-spacing: 0; }
+        h1 { font-size: 2.25rem !important; line-height: 1.15 !important; }
+        h2 { font-size: 1.45rem !important; }
+        h3 { font-size: 1.1rem !important; }
+        [data-testid="stMetric"] {
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            padding: 1rem 1.1rem;
+            box-shadow: 0 4px 16px rgba(22, 35, 59, 0.04);
+        }
+        [data-testid="stMetricLabel"] { color: var(--muted); }
+        [data-testid="stMetricValue"] { color: var(--ink); }
+        div[data-testid="stButton"] > button {
+            border-radius: 9px;
+            min-height: 2.55rem;
+            font-weight: 600;
+            color: var(--ink) !important;
+            background: #ffffff !important;
+            border-color: #cbd5e1 !important;
+        }
+        div[data-testid="stButton"] > button:hover {
+            color: var(--blue) !important;
+            border-color: var(--blue) !important;
+        }
+        div[data-testid="stButton"] > button[kind="primary"],
+        div[data-testid="stFormSubmitButton"] > button {
+            color: #ffffff !important;
+            background: var(--blue) !important;
+            border-color: var(--blue) !important;
+        }
+        div[data-testid="stButton"] > button[kind="primary"] p,
+        div[data-testid="stFormSubmitButton"] > button p {
+            color: #ffffff !important;
+        }
+        div[data-testid="stButton"] > button:disabled {
+            color: #7a8699 !important;
+            background: #e8edf5 !important;
+            border-color: #d8dfeb !important;
+        }
+        [data-testid="stTextInput"] input,
+        [data-testid="stTextArea"] textarea,
+        [data-baseweb="select"] > div {
+            color: var(--ink) !important;
+            -webkit-text-fill-color: var(--ink) !important;
+            background: #ffffff !important;
+            border-color: #cbd5e1 !important;
+        }
+        [data-testid="stTextInput"] [data-baseweb="input"],
+        [data-testid="stTextInput"] [data-baseweb="base-input"],
+        [data-testid="stTextArea"] [data-baseweb="textarea"] {
+            color: var(--ink) !important;
+            background: #ffffff !important;
+        }
+        [data-testid="stTextInputRootElement"],
+        [data-testid="stTextAreaRootElement"] {
+            color: var(--ink) !important;
+            background: #ffffff !important;
+            border: 1px solid #cbd5e1 !important;
+            border-radius: 8px !important;
+            box-shadow: none !important;
+        }
+        [data-testid="stTextInputRootElement"]:focus-within,
+        [data-testid="stTextAreaRootElement"]:focus-within {
+            border-color: var(--blue) !important;
+            box-shadow: 0 0 0 1px var(--blue) !important;
+        }
+        [data-testid="stTextInput"] svg,
+        [data-testid="stTextArea"] svg {
+            fill: var(--muted) !important;
+            color: var(--muted) !important;
+        }
+        [data-testid="stTextInput"] input::placeholder,
+        [data-testid="stTextArea"] textarea::placeholder {
+            color: #98a2b3 !important;
+            -webkit-text-fill-color: #98a2b3 !important;
+        }
+        [data-baseweb="tab-list"] {
+            border-bottom-color: var(--line) !important;
+        }
+        [data-baseweb="tab"] p {
+            color: var(--muted) !important;
+        }
+        [aria-selected="true"][data-baseweb="tab"] p {
+            color: var(--blue) !important;
+        }
+        div[data-testid="stForm"] {
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            padding: 1.2rem;
+        }
+        [data-testid="stExpander"] {
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-radius: 12px;
+        }
+        .zl-eyebrow {
+            color: var(--blue);
+            font-size: .78rem;
+            font-weight: 700;
+            letter-spacing: .08em;
+            text-transform: uppercase;
+            margin-bottom: .6rem;
+        }
+        .zl-hero {
+            background: linear-gradient(135deg, #16233b 0%, #213d69 100%);
+            border-radius: 18px;
+            padding: 2rem 2.2rem;
+            margin-bottom: 1.4rem;
+            color: #ffffff;
+            box-shadow: 0 12px 30px rgba(22, 35, 59, .16);
+        }
+        .zl-hero h1, .zl-hero p { color: #ffffff; }
+        .zl-hero p { margin: .45rem 0 0; color: #d7e1f2; font-size: 1rem; }
+        .zl-section { margin: 1.7rem 0 .75rem; }
+        .zl-section-title { color: var(--ink); font-size: 1.15rem; font-weight: 700; }
+        .zl-section-caption { color: var(--muted); font-size: .9rem; margin-top: .2rem; }
+        .zl-pill {
+            display: inline-block;
+            background: var(--blue-soft);
+            color: var(--blue);
+            border-radius: 999px;
+            padding: .22rem .62rem;
+            margin: .15rem .2rem .15rem 0;
+            font-size: .82rem;
+            font-weight: 600;
+        }
+        .zl-status {
+            display: inline-block;
+            border-radius: 999px;
+            padding: .22rem .62rem;
+            font-size: .8rem;
+            font-weight: 700;
+        }
+        .zl-status-open { background: #e8f7f2; color: #08796f; }
+        .zl-status-muted { background: #eef1f6; color: #596579; }
+        .zl-detail-band {
+            background: #eef4ff;
+            border-left: 4px solid var(--blue);
+            border-radius: 8px;
+            padding: .9rem 1rem;
+            margin: .6rem 0 1.2rem;
+        }
+        .zl-empty {
+            background: var(--surface);
+            border: 1px dashed #b9c6da;
+            border-radius: 14px;
+            padding: 1.5rem;
+            color: var(--muted);
+            text-align: center;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def post_api(
@@ -140,6 +342,604 @@ def set_current_user(
         st.session_state["token"] = token
     else:
         st.session_state.pop("token", None)
+
+
+def navigate_to(page: str) -> None:
+    st.session_state["app_page"] = page
+    st.session_state.pop("selected_project_id", None)
+    st.session_state.pop("project_return_page", None)
+
+
+def open_project_detail(project_id: int, return_page: str) -> None:
+    st.session_state["selected_project_id"] = project_id
+    st.session_state["project_return_page"] = return_page
+
+
+def render_page_heading(title: str, description: str) -> None:
+    st.markdown(f"<div class='zl-eyebrow'>知遇 LinkLab</div>", unsafe_allow_html=True)
+    st.title(title)
+    st.caption(description)
+
+
+def profile_completeness(profile: dict | None) -> int:
+    if not profile or not profile.get("success"):
+        return 0
+    checks = [
+        bool(profile.get("skills")),
+        bool(profile.get("experience")),
+        bool(profile.get("interests")),
+        bool(profile.get("preference")),
+        bool(profile.get("time_commitment") and profile.get("time_commitment") != "未知"),
+    ]
+    return round(sum(checks) / len(checks) * 100)
+
+
+def load_home_overview(force: bool = False) -> dict:
+    user_id = st.session_state["user_id"]
+    cache_key = f"home_overview_{user_id}"
+    if force or cache_key not in st.session_state:
+        profile = get_api(f"/api/profile/{user_id}", show_error=False)
+        projects = get_api(f"/api/my_projects/{user_id}", show_error=False)
+        matches = get_api(
+            f"/api/match_list/{user_id}?scope=cross_school",
+            show_error=False,
+            timeout=120,
+        )
+        st.session_state[cache_key] = {
+            "profile": profile or {},
+            "projects": (projects or {}).get("projects", []),
+            "matches": (matches or {}).get("matches", []),
+        }
+    return st.session_state[cache_key]
+
+
+def render_skill_pills(skills: list | None) -> None:
+    values = [str(skill) for skill in (skills or []) if str(skill).strip()]
+    if not values:
+        st.caption("暂未填写技能")
+        return
+    pills = "".join(
+        f"<span class='zl-pill'>{escape(skill)}</span>" for skill in values[:8]
+    )
+    st.markdown(pills, unsafe_allow_html=True)
+
+
+def render_project_status(status: str) -> None:
+    labels = {
+        "recruiting": "招募中",
+        "full": "已满员",
+        "closed": "已关闭",
+        "completed": "已完成",
+    }
+    css_class = "zl-status-open" if status == "recruiting" else "zl-status-muted"
+    st.markdown(
+        f"<span class='zl-status {css_class}'>{labels.get(status, status or '未知')}</span>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_candidate_card(candidate: dict, project_id: int) -> None:
+    user_id = candidate.get("user_id")
+    owner_status = candidate.get("owner_status", "pending")
+    mutual = bool(candidate.get("mutual"))
+    with st.container(border=True):
+        heading, score_column = st.columns([4, 1])
+        with heading:
+            st.subheader(candidate.get("username") or "未命名用户")
+            st.caption(
+                f"{candidate.get('school') or '学校未填写'} · "
+                f"{candidate.get('major') or '专业未填写'} · "
+                f"{candidate.get('grade') or '年级未填写'}"
+            )
+        with score_column:
+            st.metric("匹配度", f"{float(candidate.get('total_score', 0)):.0%}")
+
+        skill_column, time_column, experience_column = st.columns(3)
+        dimensions = (
+            (skill_column, "技能匹配", candidate.get("skill_match", 0)),
+            (time_column, "时间匹配", candidate.get("time_match", 0)),
+            (experience_column, "经验匹配", candidate.get("experience_match", 0)),
+        )
+        for column, label, score in dimensions:
+            with column:
+                value = max(0.0, min(float(score), 1.0))
+                st.caption(f"{label} {value:.0%}")
+                st.progress(value)
+
+        profile_left, profile_right = st.columns(2)
+        with profile_left:
+            st.markdown("**技能**")
+            render_skill_pills(candidate.get("skills"))
+            st.markdown("**时间投入**")
+            st.write(candidate.get("time_commitment") or "未知")
+        with profile_right:
+            st.markdown("**经历**")
+            st.write("、".join(candidate.get("experience") or []) or "未填写")
+            st.markdown("**兴趣方向**")
+            st.write("、".join(candidate.get("interests") or []) or "未填写")
+
+        st.info(candidate.get("explanation") or "暂无匹配解释")
+        if mutual:
+            st.success("双方已匹配，联系方式将在下一阶段开放")
+        elif owner_status == "rejected":
+            st.warning("当前标记为暂不考虑，你可以随时重新选择")
+        else:
+            st.caption("候选人已表达意向，等待你处理")
+
+        accept_column, decline_column = st.columns(2)
+        with accept_column:
+            accept_clicked = st.button(
+                "已感兴趣" if owner_status == "interested" else "感兴趣",
+                key=f"owner_accept_{project_id}_{user_id}",
+                type="primary",
+                disabled=owner_status == "interested",
+                use_container_width=True,
+            )
+        with decline_column:
+            decline_clicked = st.button(
+                "已暂不考虑" if owner_status == "rejected" else "暂不考虑",
+                key=f"owner_decline_{project_id}_{user_id}",
+                disabled=owner_status == "rejected",
+                use_container_width=True,
+            )
+        action = "interested" if accept_clicked else ("rejected" if decline_clicked else None)
+        if action:
+            with st.spinner("正在保存候选人状态..."):
+                result = post_api(
+                    "/api/owner_candidate_action",
+                    {
+                        "owner_id": st.session_state["user_id"],
+                        "project_id": project_id,
+                        "user_id": user_id,
+                        "action": action,
+                    },
+                )
+            if result:
+                st.success("候选人状态已更新")
+                st.rerun()
+
+
+def render_my_match_card(match: dict) -> None:
+    project_id = match.get("project_id")
+    relationship_status = match.get("relationship_status", "user_interested")
+    status_labels = {
+        "user_interested": ("等待发起人处理", "info"),
+        "mutual": ("双方已匹配", "success"),
+        "owner_declined": ("发起人暂不考虑", "warning"),
+    }
+    status_text, status_kind = status_labels.get(
+        relationship_status, ("状态待确认", "info")
+    )
+    with st.container(border=True):
+        heading, score_column = st.columns([4, 1])
+        with heading:
+            st.subheader(match.get("project_name") or "未命名项目")
+            st.caption(
+                f"发起人：{match.get('owner_username') or '未填写'} · "
+                f"{match.get('owner_school') or '学校未填写'}"
+            )
+        with score_column:
+            st.metric("匹配度", f"{float(match.get('total_score', 0)):.0%}")
+
+        getattr(st, status_kind)(status_text)
+        dimension_columns = st.columns(3)
+        for column, label, key in zip(
+            dimension_columns,
+            ("技能匹配", "时间匹配", "经验匹配"),
+            ("skill_match", "time_match", "experience_match"),
+        ):
+            with column:
+                value = max(0.0, min(float(match.get(key, 0)), 1.0))
+                st.caption(f"{label} {value:.0%}")
+                st.progress(value)
+        st.write(match.get("explanation") or "暂无匹配解释")
+        st.button(
+            "查看项目详情",
+            key=f"my_match_detail_{project_id}",
+            on_click=open_project_detail,
+            args=(project_id, "我的匹配"),
+        )
+
+
+def show_project_detail() -> None:
+    project_id = st.session_state.get("selected_project_id")
+    return_page = st.session_state.get("project_return_page", "发现项目")
+    if st.button("返回项目列表", key=f"back_project_{project_id}"):
+        st.session_state.pop("selected_project_id", None)
+        st.session_state.pop("project_return_page", None)
+        st.rerun()
+
+    with st.spinner("正在读取项目详情..."):
+        project = get_api(
+            f"/api/project/{project_id}?user_id={st.session_state['user_id']}"
+        )
+    if not project or not project.get("success"):
+        return
+
+    heading_left, heading_right = st.columns([4, 1])
+    with heading_left:
+        render_page_heading(
+            project.get("name", "未命名项目"),
+            f"由 {project.get('owner_username') or '匿名用户'} 发起",
+        )
+    with heading_right:
+        render_project_status(project.get("status", ""))
+
+    scope_label = (
+        "同校优先" if project.get("scope") == "same_school" else "跨校开放"
+    )
+    created_at = str(project.get("created_at") or "")[:10] or "未知"
+    st.markdown(
+        f"<div class='zl-detail-band'>"
+        f"{escape(project.get('owner_school') or '学校未填写')} · "
+        f"{escape(scope_label)} · 发布于 {escape(created_at)}</div>",
+        unsafe_allow_html=True,
+    )
+
+    summary_left, summary_right = st.columns([2, 1])
+    with summary_left:
+        st.subheader("项目背景与目标")
+        st.write(project.get("background") or project.get("raw_text") or "暂未填写")
+        if project.get("background") and project.get("raw_text"):
+            st.markdown("**需求描述**")
+            st.write(project.get("raw_text"))
+    with summary_right:
+        st.markdown("**项目类型**")
+        st.write(project.get("project_type") or "未填写")
+        st.markdown("**时间要求**")
+        st.write(project.get("time_requirement") or "未知")
+        st.markdown("**所需技能**")
+        render_skill_pills(project.get("required_skills"))
+
+    st.subheader("优先条件")
+    priorities = project.get("priority") or []
+    if priorities:
+        for item in priorities:
+            st.markdown(f"- {item}")
+    else:
+        st.caption("暂无额外优先条件")
+
+    st.subheader("发起人公开信息")
+    owner_columns = st.columns(3)
+    owner_columns[0].metric("学校", project.get("owner_school") or "未填写")
+    owner_columns[1].metric("专业", project.get("owner_major") or "未填写")
+    owner_columns[2].metric("年级", project.get("owner_grade") or "未填写")
+
+    is_owner = project.get("owner_id") == st.session_state.get("user_id")
+    is_interested = bool(project.get("interested"))
+    can_apply = (
+        project.get("status") == "recruiting" and not is_owner and not is_interested
+    )
+    if st.button(
+        (
+            "感兴趣"
+            if can_apply
+            else (
+                "已感兴趣"
+                if is_interested
+                else ("这是我发布的项目" if is_owner else "当前不可申请")
+            )
+        ),
+        key=f"detail_interest_{project_id}_{return_page}",
+        type="primary",
+        disabled=not can_apply,
+    ):
+        with st.spinner("正在保存感兴趣状态..."):
+            result = post_api(
+                "/api/interest",
+                {"user_id": st.session_state["user_id"], "project_id": project_id},
+            )
+        if result:
+            st.success("已记录你的意向")
+
+
+def render_match_card(match: dict, *, source: str) -> None:
+    project_id = match.get("project_id")
+    is_interested = bool(match.get("interested")) or match.get("status") == "interested"
+    total_score = max(0.0, min(float(match.get("total_score", 0)), 1.0))
+    skill_match = max(0.0, min(float(match.get("skill_match", 0)), 1.0))
+    time_match = max(0.0, min(float(match.get("time_match", 0)), 1.0))
+    experience_match = max(0.0, min(float(match.get("experience_match", 0)), 1.0))
+
+    with st.container(border=True):
+        title_column, score_column = st.columns([4, 1])
+        with title_column:
+            st.subheader(match.get("project_name", "未命名项目"))
+            school = match.get("owner_school") or "学校未填写"
+            scope = "同校优先" if match.get("scope") == "same_school" else "跨校开放"
+            st.caption(f"{school} · {scope}")
+        with score_column:
+            st.metric("综合匹配度", f"{total_score:.0%}")
+
+        skill_column, time_column, experience_column = st.columns(3)
+        dimensions = (
+            (skill_column, "技能匹配", skill_match),
+            (time_column, "时间匹配", time_match),
+            (experience_column, "经验匹配", experience_match),
+        )
+        for column, label, score in dimensions:
+            with column:
+                st.caption(f"{label} {score:.0%}")
+                st.progress(score)
+
+        st.write(match.get("explanation") or "暂无匹配解释")
+        action_left, action_right = st.columns([1, 3])
+        with action_left:
+            if st.button(
+                "已感兴趣" if is_interested else "感兴趣",
+                key=f"{source}_interest_{project_id}",
+                type="primary",
+                disabled=is_interested,
+                use_container_width=True,
+            ):
+                if project_id is None:
+                    st.error("项目信息不完整，请刷新后重试")
+                else:
+                    with st.spinner("正在保存感兴趣状态..."):
+                        result = post_api(
+                            "/api/interest",
+                            {
+                                "user_id": st.session_state["user_id"],
+                                "project_id": project_id,
+                            },
+                        )
+                    if result and result.get("interested"):
+                        match["interested"] = True
+                        match["status"] = "interested"
+                        st.success("已记录你的意向")
+                        st.rerun()
+        with action_right:
+            st.button(
+                "查看详情",
+                key=f"{source}_detail_{project_id}",
+                on_click=open_project_detail,
+                args=(project_id, "首页" if source == "home" else "匹配推荐"),
+                use_container_width=True,
+            )
+
+
+def render_project_card(project: dict) -> None:
+    project_id = project.get("project_id")
+    with st.container(border=True):
+        heading, score_column = st.columns([4, 1])
+        with heading:
+            st.subheader(project.get("name") or "未命名项目")
+            scope_label = (
+                "同校优先"
+                if project.get("scope") == "same_school"
+                else "跨校开放"
+            )
+            project_type = project.get("project_type") or "类型未填写"
+            st.caption(
+                f"{project.get('owner_school') or '学校未填写'} · "
+                f"{project_type} · {scope_label}"
+            )
+        with score_column:
+            if project.get("total_score") is not None:
+                st.metric("匹配度", f"{float(project['total_score']):.0%}")
+            else:
+                render_project_status(project.get("status", ""))
+
+        description = project.get("background") or project.get("raw_text") or "暂无项目描述"
+        st.write(description[:180] + ("..." if len(description) > 180 else ""))
+        render_skill_pills(project.get("required_skills"))
+        st.caption(
+            f"时间要求：{project.get('time_requirement') or '未知'} · "
+            f"发布于 {str(project.get('created_at') or '')[:10] or '未知'}"
+        )
+
+        detail_column, interest_column, status_column = st.columns([1, 1, 2])
+        with detail_column:
+            st.button(
+                "查看详情",
+                key=f"discover_detail_{project_id}",
+                on_click=open_project_detail,
+                args=(project_id, "发现项目"),
+                use_container_width=True,
+            )
+        with interest_column:
+            is_owner = project.get("owner_id") == st.session_state.get("user_id")
+            is_interested = bool(project.get("interested"))
+            can_apply = project.get("status") == "recruiting" and not is_owner
+            if st.button(
+                "已感兴趣" if is_interested else "感兴趣",
+                key=f"discover_interest_{project_id}",
+                type="primary",
+                disabled=is_interested or not can_apply,
+                use_container_width=True,
+            ):
+                with st.spinner("正在保存感兴趣状态..."):
+                    result = post_api(
+                        "/api/interest",
+                        {
+                            "user_id": st.session_state["user_id"],
+                            "project_id": project_id,
+                        },
+                    )
+                if result:
+                    st.success("已记录你的意向")
+                    st.rerun()
+        with status_column:
+            if project.get("total_score") is not None:
+                render_project_status(project.get("status", ""))
+
+
+def show_home_page() -> None:
+    if (
+        st.session_state.get("selected_project_id")
+        and st.session_state.get("project_return_page") == "首页"
+    ):
+        show_project_detail()
+        return
+
+    username = st.session_state.get("username", "同学")
+    school = st.session_state.get("school") or "高校科研社区"
+    st.markdown(
+        f"""
+        <section class="zl-hero">
+            <div class="zl-eyebrow" style="color:#83c9ff">RESEARCH COLLABORATION</div>
+            <h1>你好，{username}</h1>
+            <p>{school} · 用能力画像连接合适的项目与科研搭档。</p>
+        </section>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.spinner("正在整理你的协作概览..."):
+        overview = load_home_overview()
+    completeness = profile_completeness(overview["profile"])
+    projects = overview["projects"]
+    matches = overview["matches"]
+    interested_count = sum(
+        1 for item in matches if item.get("interested") or item.get("status") == "interested"
+    )
+
+    metric_columns = st.columns(4)
+    metrics = (
+        ("画像完整度", f"{completeness}%"),
+        ("推荐项目", str(len(matches))),
+        ("我发布的项目", str(len(projects))),
+        ("已表达意向", str(interested_count)),
+    )
+    for column, (label, value) in zip(metric_columns, metrics):
+        with column:
+            st.metric(label, value)
+
+    st.markdown(
+        "<div class='zl-section'><div class='zl-section-title'>快速开始</div>"
+        "<div class='zl-section-caption'>从完善画像到建立连接，只需要三个步骤。</div></div>",
+        unsafe_allow_html=True,
+    )
+    quick_columns = st.columns(3)
+    quick_actions = (
+        (quick_columns[0], "完善能力画像", "让系统更准确地理解你的技能与经历", "我的画像"),
+        (quick_columns[1], "发现科研项目", "浏览同校与跨校开放的合作机会", "发现项目"),
+        (quick_columns[2], "发布招募需求", "把项目需求转换成清晰的结构化标签", "发布项目"),
+    )
+    for column, title, description, page in quick_actions:
+        with column:
+            with st.container(border=True):
+                st.subheader(title)
+                st.caption(description)
+                st.button(
+                    "进入",
+                    key=f"home_go_{page}",
+                    on_click=navigate_to,
+                    args=(page,),
+                    use_container_width=True,
+                )
+
+    st.markdown(
+        "<div class='zl-section'><div class='zl-section-title'>优先推荐</div>"
+        "<div class='zl-section-caption'>根据你的画像展示当前得分最高的项目。</div></div>",
+        unsafe_allow_html=True,
+    )
+    if matches:
+        for match in matches[:2]:
+            render_match_card(match, source="home")
+    else:
+        st.markdown(
+            "<div class='zl-empty'>暂无推荐项目。完善画像后再来看看，或者先发布一个项目。</div>",
+            unsafe_allow_html=True,
+        )
+
+    if st.button("刷新概览", key="refresh_home"):
+        load_home_overview(force=True)
+        st.rerun()
+
+
+def show_discover_projects_page() -> None:
+    if (
+        st.session_state.get("selected_project_id")
+        and st.session_state.get("project_return_page") == "发现项目"
+    ):
+        show_project_detail()
+        return
+
+    render_page_heading("发现项目", "浏览同校与跨校科研机会，快速找到值得进一步了解的方向。")
+    keyword = st.text_input(
+        "搜索项目",
+        placeholder="搜索项目名称、描述、学校或技能",
+    ).strip()
+    school_column, type_column, skill_column = st.columns(3)
+    with school_column:
+        school = st.text_input("学校", placeholder="例如：华东师范大学").strip()
+    with type_column:
+        project_type = st.text_input("项目类型", placeholder="例如：大模型应用").strip()
+    with skill_column:
+        skill = st.text_input("所需技能", placeholder="例如：Python").strip()
+
+    scope_column, status_column, sort_column = st.columns(3)
+    with scope_column:
+        scope_label = st.selectbox("开放范围", ["全部范围", "同校优先", "跨校开放"])
+    with status_column:
+        status_label = st.selectbox(
+            "招募状态", ["招募中", "全部状态", "已满员", "已关闭", "已完成"]
+        )
+    with sort_column:
+        sort_label = st.selectbox("排序", ["最新发布", "匹配度优先"])
+
+    scope_map = {"全部范围": "", "同校优先": "same_school", "跨校开放": "cross_school"}
+    status_map = {
+        "全部状态": "all",
+        "招募中": "recruiting",
+        "已满员": "full",
+        "已关闭": "closed",
+        "已完成": "completed",
+    }
+    page = int(st.session_state.get("discover_page", 1))
+    query = urlencode(
+        {
+            "keyword": keyword,
+            "school": school,
+            "project_type": project_type,
+            "skill": skill,
+            "scope": scope_map[scope_label],
+            "status": status_map[status_label],
+            "sort": "match" if sort_label == "匹配度优先" else "latest",
+            "page": page,
+            "page_size": 8,
+            "user_id": st.session_state["user_id"],
+        }
+    )
+    with st.spinner("正在搜索项目..."):
+        result = get_api(f"/api/projects?{query}")
+    if not result or not result.get("success"):
+        return
+
+    projects = result.get("projects", [])
+    pagination = result.get("pagination", {})
+    total = int(pagination.get("total", len(projects)))
+    total_pages = max(int(pagination.get("total_pages", 1)), 1)
+    if page > total_pages:
+        st.session_state["discover_page"] = total_pages
+        st.rerun()
+
+    st.caption(f"找到 {total} 个符合条件的项目 · 第 {page}/{total_pages} 页")
+    if not projects:
+        st.markdown(
+            "<div class='zl-empty'>没有符合当前条件的项目，可以尝试清空关键词或切换范围。</div>",
+            unsafe_allow_html=True,
+        )
+        return
+    for project in projects:
+        render_project_card(project)
+
+    previous_column, page_column, next_column = st.columns([1, 2, 1])
+    with previous_column:
+        if st.button("上一页", disabled=page <= 1, use_container_width=True):
+            st.session_state["discover_page"] = page - 1
+            st.rerun()
+    with page_column:
+        st.markdown(
+            f"<div style='text-align:center;padding:.65rem;color:#667085'>"
+            f"第 {page} 页，共 {total_pages} 页</div>",
+            unsafe_allow_html=True,
+        )
+    with next_column:
+        if st.button("下一页", disabled=page >= total_pages, use_container_width=True):
+            st.session_state["discover_page"] = page + 1
+            st.rerun()
 
 
 def show_auth_page() -> None:
@@ -386,6 +1186,13 @@ def show_publish_project_page() -> None:
 
 
 def show_match_recommendations_page() -> None:
+    if (
+        st.session_state.get("selected_project_id")
+        and st.session_state.get("project_return_page") == "匹配推荐"
+    ):
+        show_project_detail()
+        return
+
     st.header("为你推荐的匹配项目")
     success_message = st.session_state.pop("interest_success_message", None)
     if success_message:
@@ -415,65 +1222,45 @@ def show_match_recommendations_page() -> None:
 
     st.success(f"匹配成功，共找到 {len(matches)} 个项目")
     for match in matches:
-        project_id = match.get("project_id")
-        is_interested = bool(match.get("interested")) or (
-            match.get("status") == "interested"
+        render_match_card(match, source="recommendation")
+
+
+def show_my_matches_page() -> None:
+    if (
+        st.session_state.get("selected_project_id")
+        and st.session_state.get("project_return_page") == "我的匹配"
+    ):
+        show_project_detail()
+        return
+
+    render_page_heading("我的匹配", "查看你表达过意向的项目和发起人的处理结果。")
+    with st.spinner("正在读取匹配进度..."):
+        result = get_api(f"/api/my_matches/{st.session_state['user_id']}")
+    if result is None or not result.get("success"):
+        return
+    matches = result.get("matches", [])
+    if not matches:
+        st.markdown(
+            "<div class='zl-empty'>你还没有对项目表达意向，可以先去发现项目。</div>",
+            unsafe_allow_html=True,
         )
-        total_score = max(0.0, min(float(match.get("total_score", 0)), 1.0))
-        skill_match = max(0.0, min(float(match.get("skill_match", 0)), 1.0))
-        time_match = max(0.0, min(float(match.get("time_match", 0)), 1.0))
-        experience_match = max(
-            0.0,
-            min(float(match.get("experience_match", 0)), 1.0),
-        )
+        return
 
-        with st.container(border=True):
-            title_column, score_column = st.columns([4, 1])
-            with title_column:
-                st.subheader(match.get("project_name", "未命名项目"))
-                st.caption(
-                    f"项目发起人学校：{match.get('owner_school') or '未填写'}"
-                )
-            with score_column:
-                st.metric("综合匹配度", f"{total_score:.0%}")
-
-            skill_column, time_column, experience_column = st.columns(3)
-            with skill_column:
-                st.write(f"技能匹配：{skill_match:.0%}")
-                st.progress(skill_match)
-            with time_column:
-                st.write(f"时间匹配：{time_match:.0%}")
-                st.progress(time_match)
-            with experience_column:
-                st.write(f"经验匹配：{experience_match:.0%}")
-                st.progress(experience_match)
-
-            st.write(match.get("explanation") or "暂无匹配解释")
-            if st.button(
-                "已感兴趣" if is_interested else "感兴趣",
-                key=f"interested_project_{project_id}",
-                type="primary",
-                disabled=is_interested,
-            ):
-                if project_id is None:
-                    st.error("项目信息不完整，请刷新后重试")
-                    continue
-                with st.spinner("正在保存感兴趣状态..."):
-                    interest_result = post_api(
-                        "/api/interest",
-                        {
-                            "user_id": st.session_state["user_id"],
-                            "project_id": project_id,
-                        },
-                    )
-                if interest_result and interest_result.get("interested"):
-                    project_name = match.get("project_name", "该项目")
-                    st.session_state["interest_success_message"] = (
-                        f"已成功标记对“{project_name}”感兴趣"
-                    )
-                    st.rerun()
-                elif interest_result:
-                    st.error("感兴趣状态未保存，请稍后重试")
+    counts = {
+        "mutual": sum(item.get("relationship_status") == "mutual" for item in matches),
+        "pending": sum(
+            item.get("relationship_status") == "user_interested" for item in matches
+        ),
+        "declined": sum(
+            item.get("relationship_status") == "owner_declined" for item in matches
+        ),
+    }
+    metric_columns = st.columns(3)
+    metric_columns[0].metric("双方已匹配", counts["mutual"])
+    metric_columns[1].metric("等待处理", counts["pending"])
+    metric_columns[2].metric("暂不考虑", counts["declined"])
+    for match in matches:
+        render_my_match_card(match)
 
 
 def show_my_projects_page() -> None:
@@ -491,6 +1278,7 @@ def show_my_projects_page() -> None:
     st.success(f"共读取到 {len(projects)} 个项目")
     status_labels = {
         "recruiting": "招募中",
+        "full": "已满员",
         "closed": "已关闭",
         "completed": "已完成",
     }
@@ -530,28 +1318,65 @@ def show_my_projects_page() -> None:
             st.markdown("**原始需求描述**")
             st.write(project.get("raw_text") or "未填写")
 
+            st.markdown("**候选人管理**")
+            with st.spinner("正在读取候选人..."):
+                candidates_result = get_api(
+                    f"/api/project/{project.get('project_id')}/candidates"
+                    f"?owner_id={st.session_state['user_id']}"
+                )
+            if candidates_result is None or not candidates_result.get("success"):
+                continue
+            candidates = candidates_result.get("candidates", [])
+            if not candidates:
+                st.caption("暂时还没有用户对这个项目表达感兴趣")
+            else:
+                st.caption(f"共有 {len(candidates)} 位候选人表达了意向")
+                for candidate in candidates:
+                    render_candidate_card(candidate, project.get("project_id"))
+
 
 def show_authenticated_app() -> None:
     show_queued_success()
     with st.sidebar:
+        st.markdown("### 知遇 **LinkLab**")
+        st.caption("科研协作匹配平台")
+        st.divider()
         st.subheader(st.session_state["username"])
         school = st.session_state.get("school")
         if school:
             st.caption(school)
 
+        pages = [
+            "首页",
+            "发现项目",
+            "匹配推荐",
+            "我的匹配",
+            "我的画像",
+            "发布项目",
+            "我的项目",
+        ]
+        current_page = st.session_state.get("app_page", "首页")
+        if current_page not in pages:
+            current_page = "首页"
         page = st.radio(
             "页面导航",
-            ["我的画像", "发布项目", "匹配推荐", "我的项目"],
+            pages,
+            index=pages.index(current_page),
+            key="app_page",
         )
 
+        st.divider()
         if st.button("退出登录", use_container_width=True):
             st.session_state.clear()
             st.rerun()
 
     pages = {
+        "首页": show_home_page,
+        "发现项目": show_discover_projects_page,
         "我的画像": show_profile_page,
         "发布项目": show_publish_project_page,
         "匹配推荐": show_match_recommendations_page,
+        "我的匹配": show_my_matches_page,
         "我的项目": show_my_projects_page,
     }
     pages[page]()
@@ -563,6 +1388,7 @@ def main() -> None:
         page_icon="🔗",
         layout="wide",
     )
+    inject_styles()
 
     if st.session_state.get("user_id"):
         show_authenticated_app()
