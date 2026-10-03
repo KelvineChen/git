@@ -85,6 +85,27 @@ def init_db() -> None:
                     )
                 )
 
+    project_columns = {
+        column["name"] for column in inspect(engine).get_columns("projects")
+    }
+    project_migrations = {
+        "moderation_status": "VARCHAR(30) NOT NULL DEFAULT 'active'",
+        "moderation_reason": "TEXT",
+        "moderation_previous_status": "VARCHAR(30)",
+        "moderated_at": "DATETIME",
+    }
+    missing_project_columns = [
+        (name, column_type)
+        for name, column_type in project_migrations.items()
+        if name not in project_columns
+    ]
+    if missing_project_columns:
+        with engine.begin() as connection:
+            for name, column_type in missing_project_columns:
+                connection.execute(
+                    text(f"ALTER TABLE projects ADD COLUMN {name} {column_type}")
+                )
+
 
 def get_db() -> Generator[Session, None, None]:
     """Yield one database session per request and always close it."""

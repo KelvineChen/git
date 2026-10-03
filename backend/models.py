@@ -62,6 +62,14 @@ class Project(Base):
     raw_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String, default="recruiting", nullable=False)
     scope: Mapped[str] = mapped_column(String, default="same_school", nullable=False)
+    moderation_status: Mapped[str] = mapped_column(
+        String(30), default="active", nullable=False
+    )
+    moderation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    moderation_previous_status: Mapped[str | None] = mapped_column(
+        String(30), nullable=True
+    )
+    moderated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
     owner: Mapped[User] = relationship(back_populates="projects")
@@ -148,3 +156,30 @@ class Notification(Base):
     )
 
     user: Mapped[User] = relationship(back_populates="notifications")
+
+
+class FavoriteProject(Base):
+    __tablename__ = "favorite_projects"
+    __table_args__ = (
+        UniqueConstraint("user_id", "project_id", name="uq_favorite_project"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+
+
+class Feedback(Base):
+    __tablename__ = "feedback"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
+    category: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    contact_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_page: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="pending", nullable=False, index=True)
+    admin_reply: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)

@@ -308,6 +308,25 @@ def get_api(
     return result
 
 
+def delete_api(path: str, params: dict | None = None) -> dict | None:
+    try:
+        response = requests.delete(
+            f"{BACKEND_URL}{path}", params=params, timeout=30
+        )
+        response.raise_for_status()
+        result = response.json()
+    except requests.RequestException:
+        st.error("网络异常，请稍后重试")
+        return None
+    except ValueError:
+        st.error("后端返回的数据格式不正确")
+        return None
+    if not result.get("success"):
+        st.error(result.get("message", "操作失败，请重试"))
+        return None
+    return result
+
+
 def queue_success(message: str) -> None:
     st.session_state["success_message"] = message
 
@@ -437,6 +456,33 @@ def render_project_status(status: str) -> None:
     st.markdown(
         f"<span class='zl-status {css_class}'>{labels.get(status, status or '未知')}</span>",
         unsafe_allow_html=True,
+    )
+
+
+def render_match_breakdown(match: dict, key: str) -> None:
+    """Show the three scoring dimensions as a compact visual analysis."""
+    values = [
+        {"维度": "技能", "得分": round(max(0.0, min(float(match.get("skill_match", 0)), 1.0)) * 100, 1)},
+        {"维度": "时间", "得分": round(max(0.0, min(float(match.get("time_match", 0)), 1.0)) * 100, 1)},
+        {"维度": "经验", "得分": round(max(0.0, min(float(match.get("experience_match", 0)), 1.0)) * 100, 1)},
+    ]
+    st.vega_lite_chart(
+        {
+            "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+            "data": {"values": values},
+            "mark": {"type": "bar", "cornerRadiusEnd": 5, "color": "#2764e7"},
+            "encoding": {
+                "y": {"field": "维度", "type": "nominal", "sort": ["技能", "时间", "经验"], "title": None},
+                "x": {"field": "得分", "type": "quantitative", "scale": {"domain": [0, 100]}, "title": "得分（%）"},
+                "tooltip": [
+                    {"field": "维度", "type": "nominal"},
+                    {"field": "得分", "type": "quantitative", "format": ".1f"},
+                ],
+            },
+            "height": 110,
+        },
+        use_container_width=True,
+        key=key,
     )
 
 
@@ -589,7 +635,9 @@ def render_my_match_card(match: dict) -> None:
                 value = max(0.0, min(float(match.get(key, 0)), 1.0))
                 st.caption(f"{label} {value:.0%}")
                 st.progress(value)
-        st.write(match.get("explanation") or "暂无匹配解释")
+        with st.expander("查看匹配分析", expanded=False):
+            render_match_breakdown(match, f"my_match_chart_{project_id}")
+            st.info(match.get("explanation") or "暂无匹配解释")
         if relationship_status == "mutual":
             render_mutual_contact(
                 st.session_state["user_id"],
@@ -694,6 +742,21 @@ def show_project_detail() -> None:
         if result:
             st.success("已记录你的意向")
 
+    favorited = bool(project.get("favorited"))
+    if st.button(
+        "已收藏" if favorited else "收藏项目",
+        key=f"detail_favorite_{project_id}_{return_page}",
+        disabled=favorited,
+    ):
+        with st.spinner("正在保存收藏..."):
+            result = post_api(
+                "/api/favorites",
+                {"user_id": st.session_state["user_id"], "project_id": project_id},
+            )
+        if result and result.get("favorited"):
+            st.success("已加入收藏")
+            st.rerun()
+
 
 def render_match_card(match: dict, *, source: str) -> None:
     project_id = match.get("project_id")
@@ -724,7 +787,9 @@ def render_match_card(match: dict, *, source: str) -> None:
                 st.caption(f"{label} {score:.0%}")
                 st.progress(score)
 
-        st.write(match.get("explanation") or "暂无匹配解释")
+        with st.expander("查看匹配分析", expanded=False):
+            render_match_breakdown(match, f"{source}_match_chart_{project_id}")
+            st.info(match.get("explanation") or "暂无匹配解释")
         action_left, action_right = st.columns([1, 3])
         with action_left:
             if st.button(
@@ -790,7 +855,7 @@ def render_project_card(project: dict) -> None:
             f"发布于 {str(project.get('created_at') or '')[:10] or '未知'}"
         )
 
-        detail_column, interest_column, status_column = st.columns([1, 1, 2])
+        detail_column, interest_column, favorite_column, status_column = st.columns([1, 1, 1, 2])
         with detail_column:
             st.button(
                 "查看详情",
@@ -820,6 +885,25 @@ def render_project_card(project: dict) -> None:
                     )
                 if result:
                     st.success("已记录你的意向")
+                    st.rerun()
+        with favorite_column:
+            favorited = bool(project.get("favorited"))
+            if st.button(
+                "已收藏" if favorited else "收藏",
+                key=f"discover_favorite_{project_id}",
+                disabled=favorited,
+                use_container_width=True,
+            ):
+                with st.spinner("正在保存收藏..."):
+                    result = post_api(
+                        "/api/favorites",
+                        {
+                            "user_id": st.session_state["user_id"],
+                            "project_id": project_id,
+                        },
+                    )
+                if result and result.get("favorited"):
+                    st.success("已加入收藏")
                     st.rerun()
         with status_column:
             if project.get("total_score") is not None:
@@ -1505,6 +1589,10 @@ def show_my_projects_page() -> None:
         status = status_labels.get(project.get("status"), project.get("status", "未知"))
         created_at = project.get("created_at") or "未知日期"
         with st.expander(f"{project.get('name', '未命名项目')}  |  {status}  |  {created_at}"):
+            if project.get("moderation_status") == "removed":
+                st.error("该项目已被平台下架，暂不对其他用户展示。")
+                if project.get("moderation_reason"):
+                    st.warning(f"处理原因：{project['moderation_reason']}")
             st.caption(
                 f"发布时间：{created_at} · "
                 f"开放范围：{scope_labels.get(project.get('scope'), '未设置')}"
@@ -1549,6 +1637,117 @@ def show_my_projects_page() -> None:
                     render_candidate_card(candidate, project.get("project_id"))
 
 
+def show_favorites_page() -> None:
+    if (
+        st.session_state.get("selected_project_id")
+        and st.session_state.get("project_return_page") == "我的收藏"
+    ):
+        show_project_detail()
+        return
+    render_page_heading("我的收藏", "把值得进一步了解的项目集中保存。")
+    with st.spinner("正在读取收藏..."):
+        result = get_api(f"/api/favorites/{st.session_state['user_id']}")
+    if result is None or not result.get("success"):
+        return
+    favorites = result.get("favorites", [])
+    if not favorites:
+        st.markdown(
+            "<div class='zl-empty'>还没有收藏项目，可以先去发现项目。</div>",
+            unsafe_allow_html=True,
+        )
+        return
+    st.success(f"已收藏 {len(favorites)} 个项目")
+    for favorite in favorites:
+        project_id = favorite.get("project_id")
+        with st.container(border=True):
+            left, right = st.columns([4, 1])
+            with left:
+                st.subheader(favorite.get("name") or "未命名项目")
+                st.caption(
+                    f"{favorite.get('owner_school') or '学校未填写'} · "
+                    f"{favorite.get('project_type') or '类型未填写'} · "
+                    f"{favorite.get('status') or '未知状态'}"
+                )
+                render_skill_pills(favorite.get("required_skills"))
+                st.write(
+                    (favorite.get("raw_text") or "暂无项目描述")[:180]
+                )
+            with right:
+                st.button(
+                    "查看详情",
+                    key=f"favorite_detail_{project_id}",
+                    on_click=open_project_detail,
+                    args=(project_id, "我的收藏"),
+                    use_container_width=True,
+                )
+                if st.button(
+                    "取消收藏",
+                    key=f"favorite_remove_{project_id}",
+                    use_container_width=True,
+                ):
+                    with st.spinner("正在取消收藏..."):
+                        removed = delete_api(
+                            f"/api/favorites/{project_id}",
+                            {"user_id": st.session_state["user_id"]},
+                        )
+                    if removed and not removed.get("favorited"):
+                        st.success("已取消收藏")
+                        st.rerun()
+
+
+def show_feedback_page() -> None:
+    render_page_heading("意见反馈", "你的反馈会帮助平台持续改进匹配体验。")
+    categories = ["功能建议", "匹配不准确", "使用问题", "内容举报", "账号问题", "其他"]
+    with st.form("feedback_form"):
+        category = st.selectbox("反馈类型", categories)
+        content = st.text_area(
+            "反馈内容",
+            placeholder="请描述遇到的问题或希望改进的地方",
+            height=150,
+        )
+        contact_email = st.text_input("联系邮箱（可选）")
+        submitted = st.form_submit_button("提交反馈", type="primary")
+    if submitted:
+        with st.spinner("正在提交反馈..."):
+            result = post_api(
+                "/api/feedback",
+                {
+                    "user_id": st.session_state["user_id"],
+                    "category": category,
+                    "content": content,
+                    "contact_email": contact_email,
+                    "source_page": st.session_state.get("app_page", "意见反馈"),
+                },
+            )
+        if result:
+            st.success("反馈已提交，感谢你的建议")
+
+    st.markdown("### 我的反馈记录")
+    with st.spinner("正在读取反馈记录..."):
+        result = get_api(f"/api/my_feedback/{st.session_state['user_id']}")
+    if result is None or not result.get("success"):
+        return
+    status_labels = {
+        "pending": "待处理",
+        "reviewing": "处理中",
+        "resolved": "已处理",
+        "rejected": "已驳回",
+    }
+    feedbacks = result.get("feedback", [])
+    if not feedbacks:
+        st.caption("你还没有提交过反馈")
+        return
+    for item in feedbacks:
+        with st.expander(
+            f"{item.get('category', '其他')} · "
+            f"{status_labels.get(item.get('status'), '未知')} · "
+            f"{str(item.get('created_at') or '')[:10]}"
+        ):
+            st.write(item.get("content") or "")
+            if item.get("admin_reply"):
+                st.info(f"管理员回复：{item['admin_reply']}")
+
+
 def show_authenticated_app() -> None:
     show_queued_success()
     notification_summary = get_api(
@@ -1576,6 +1775,8 @@ def show_authenticated_app() -> None:
             "匹配推荐",
             "我的匹配",
             "通知",
+            "我的收藏",
+            "意见反馈",
             "我的画像",
             "发布项目",
             "我的项目",
@@ -1608,6 +1809,8 @@ def show_authenticated_app() -> None:
         "匹配推荐": show_match_recommendations_page,
         "我的匹配": show_my_matches_page,
         "通知": show_notifications_page,
+        "我的收藏": show_favorites_page,
+        "意见反馈": show_feedback_page,
         "我的项目": show_my_projects_page,
     }
     pages[page]()

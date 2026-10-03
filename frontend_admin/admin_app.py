@@ -45,6 +45,11 @@ if st.session_state.get("admin_token"):
             title="管理员审核",
             icon=":material/rate_review:",
         ),
+        st.Page(
+            "admin_feedback.py",
+            title="反馈处理",
+            icon=":material/feedback:",
+        ),
     ]
 else:
     pages = [

@@ -1,6 +1,7 @@
 import hashlib
 import re
 import secrets
+from datetime import datetime
 from uuid import uuid4
 
 import bcrypt
@@ -9,7 +10,7 @@ import models
 from fastapi import Depends, FastAPI, Header
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -22,6 +23,8 @@ from ai_service import (
 )
 from database import DATABASE_URL, get_db, init_db
 from models import (
+    FavoriteProject,
+    Feedback,
     MatchRecord,
     Notification,
     OwnerInterest,
@@ -131,6 +134,25 @@ class ProjectStatusRequest(BaseModel):
     owner_id: int
     project_id: int
     status: str
+
+
+class FeedbackRequest(BaseModel):
+    user_id: int
+    category: str
+    content: str
+    contact_email: str = ""
+    source_page: str = ""
+
+
+class FeedbackReplyRequest(BaseModel):
+    admin_name: str
+    status: str
+    admin_reply: str = ""
+
+
+class AdminProjectModerationRequest(BaseModel):
+    action: str
+    reason: str = ""
 
 
 def _hash_password(password: str) -> str:
@@ -471,6 +493,90 @@ def admin_users(
         return _server_error()
 
 
+@app.get("/api/admin/feedback")
+def admin_feedback(
+    status: str = "all",
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+    allowed_statuses = {"all", "pending", "reviewing", "resolved", "rejected"}
+    if status not in allowed_statuses:
+        return JSONResponse(status_code=400, content={"error": "invalid_status"})
+    try:
+        query = select(Feedback, User).join(User, User.id == Feedback.user_id)
+        if status != "all":
+            query = query.where(Feedback.status == status)
+        rows = db.execute(query.order_by(Feedback.created_at.desc())).all()
+        category_rows = db.execute(
+            select(Feedback.category, func.count(Feedback.id)).group_by(Feedback.category)
+        ).all()
+        status_rows = db.execute(
+            select(Feedback.status, func.count(Feedback.id)).group_by(Feedback.status)
+        ).all()
+        return {
+            "success": True,
+            "feedback": [
+                {
+                    "feedback_id": item.id,
+                    "user_id": user.id,
+                    "username": user.username,
+                    "category": item.category,
+                    "content": item.content,
+                    "contact_email": item.contact_email or "",
+                    "source_page": item.source_page or "",
+                    "status": item.status,
+                    "admin_reply": item.admin_reply or "",
+                    "created_at": item.created_at,
+                    "updated_at": item.updated_at,
+                }
+                for item, user in rows
+            ],
+            "statistics": {
+                "by_category": {str(key): int(value) for key, value in category_rows},
+                "by_status": {str(key): int(value) for key, value in status_rows},
+                "total": sum(int(value) for _, value in category_rows),
+            },
+        }
+    except Exception:
+        return _server_error()
+
+
+@app.post("/api/admin/feedback/{feedback_id}/reply")
+def admin_reply_feedback(
+    feedback_id: int,
+    request: FeedbackReplyRequest,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+    if request.status not in {"pending", "reviewing", "resolved", "rejected"}:
+        return JSONResponse(status_code=400, content={"error": "invalid_status"})
+    feedback = db.get(Feedback, feedback_id)
+    if feedback is None:
+        return JSONResponse(status_code=404, content={"error": "feedback_not_found"})
+    feedback.status = request.status
+    feedback.admin_reply = request.admin_reply.strip()[:3000] or None
+    try:
+        if feedback.admin_reply:
+            _add_notification(
+                db,
+                user_id=feedback.user_id,
+                notification_type="feedback_reply",
+                title="你的反馈有了新回复",
+                content=feedback.admin_reply,
+            )
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        return _server_error()
+    return {"success": True, "status": feedback.status}
+
+
 @app.get("/api/admin/users/search")
 def admin_users_search(
     username: str = "",
@@ -507,8 +613,65 @@ def _serialize_competition(project: Project) -> dict:
         "title": project.name,
         "creator": project.owner.username if project.owner else "",
         "description": project.raw_text or "",
+        "status": project.status,
+        "moderation_status": project.moderation_status,
+        "moderation_reason": project.moderation_reason or "",
+        "moderated_at": (
+            project.moderated_at.isoformat() if project.moderated_at else None
+        ),
         "created_at": project.created_at.isoformat(),
     }
+
+
+@app.get("/api/admin/statistics")
+def admin_statistics(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+    try:
+        project_status_rows = db.execute(
+            select(Project.status, func.count(Project.id)).group_by(Project.status)
+        ).all()
+        feedback_status_rows = db.execute(
+            select(Feedback.status, func.count(Feedback.id)).group_by(Feedback.status)
+        ).all()
+        return {
+            "success": True,
+            "users": db.scalar(
+                select(func.count(User.id)).where(User.role == "user")
+            ) or 0,
+            "projects": db.scalar(select(func.count(Project.id))) or 0,
+            "active_projects": db.scalar(
+                select(func.count(Project.id)).where(
+                    Project.moderation_status == "active"
+                )
+            ) or 0,
+            "removed_projects": db.scalar(
+                select(func.count(Project.id)).where(
+                    Project.moderation_status == "removed"
+                )
+            ) or 0,
+            "favorites": db.scalar(select(func.count(FavoriteProject.id))) or 0,
+            "mutual_matches": db.scalar(
+                select(func.count(OwnerInterest.id)).where(
+                    OwnerInterest.status == "interested"
+                )
+            ) or 0,
+            "pending_feedback": db.scalar(
+                select(func.count(Feedback.id)).where(Feedback.status == "pending")
+            ) or 0,
+            "project_statuses": {
+                str(key): int(value) for key, value in project_status_rows
+            },
+            "feedback_statuses": {
+                str(key): int(value) for key, value in feedback_status_rows
+            },
+        }
+    except Exception:
+        return _server_error()
 
 
 @app.get("/api/admin/competitions")
@@ -559,6 +722,88 @@ def admin_competitions_search(
         return [_serialize_competition(project) for project in projects]
     except Exception:
         return _server_error()
+
+
+@app.post("/api/admin/project/{project_id}/moderation")
+def admin_moderate_project(
+    project_id: int,
+    request: AdminProjectModerationRequest,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+    if request.action not in {"remove", "restore"}:
+        return JSONResponse(status_code=400, content={"error": "invalid_action"})
+    project = db.get(Project, project_id)
+    if project is None:
+        return JSONResponse(status_code=404, content={"error": "competition_not_found"})
+
+    reason = request.reason.strip()[:1000]
+    if request.action == "remove" and not reason:
+        return JSONResponse(status_code=400, content={"error": "reason_required"})
+
+    changed = False
+    if request.action == "remove" and project.moderation_status != "removed":
+        project.moderation_previous_status = project.status
+        project.moderation_status = "removed"
+        project.moderation_reason = reason
+        project.moderated_at = datetime.now()
+        project.status = "closed"
+        changed = True
+        _add_notification(
+            db,
+            user_id=project.owner_id,
+            notification_type="project_moderated",
+            title="你的项目已被平台下架",
+            content=f"项目“{project.name}”已被下架。原因：{reason}",
+            related_project_id=project.id,
+        )
+        interested_user_ids = db.scalars(
+            select(MatchRecord.user_id).where(
+                MatchRecord.project_id == project.id,
+                MatchRecord.status == "interested",
+            )
+        ).all()
+        for interested_user_id in set(interested_user_ids):
+            _add_notification(
+                db,
+                user_id=interested_user_id,
+                notification_type="project_moderated",
+                title="你关注的项目已被平台下架",
+                content=f"项目“{project.name}”当前已停止展示和招募。",
+                related_project_id=project.id,
+            )
+    elif request.action == "restore" and project.moderation_status == "removed":
+        restored_status = project.moderation_previous_status or "recruiting"
+        if restored_status not in {"recruiting", "full", "closed", "completed"}:
+            restored_status = "recruiting"
+        project.status = restored_status
+        project.moderation_status = "active"
+        project.moderation_reason = reason or None
+        project.moderation_previous_status = None
+        project.moderated_at = datetime.now()
+        changed = True
+        _add_notification(
+            db,
+            user_id=project.owner_id,
+            notification_type="project_restored",
+            title="你的项目已恢复展示",
+            content=f"项目“{project.name}”已通过平台复核并恢复。",
+            related_project_id=project.id,
+        )
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        return _server_error()
+    return {
+        "success": True,
+        "moderation_status": project.moderation_status,
+        "status": project.status,
+        "changed": changed,
+    }
 
 
 @app.get("/api/admin/review/list")
@@ -766,6 +1011,8 @@ def update_project_status(
         return {"success": False, "message": "项目不存在"}
     if project.owner_id != request.owner_id:
         return {"success": False, "message": "无权修改该项目"}
+    if project.moderation_status == "removed":
+        return {"success": False, "message": "项目已被平台下架，无法修改状态"}
 
     allowed_statuses = {"recruiting", "full", "closed", "completed"}
     if request.status not in allowed_statuses:
@@ -839,6 +1086,9 @@ def delete_project(
         )
         db.execute(
             delete(MatchRecord).where(MatchRecord.project_id == project_id)
+        )
+        db.execute(
+            delete(FavoriteProject).where(FavoriteProject.project_id == project_id)
         )
         db.execute(
             delete(ProjectProfile).where(ProjectProfile.project_id == project_id)
@@ -955,6 +1205,7 @@ def list_projects(
     ).all()
 
     match_records: dict[int, MatchRecord] = {}
+    favorite_project_ids: set[int] = set()
     if user_id is not None:
         match_records = {
             record.project_id: record
@@ -962,6 +1213,13 @@ def list_projects(
                 select(MatchRecord).where(MatchRecord.user_id == user_id)
             ).all()
         }
+        favorite_project_ids = set(
+            db.scalars(
+                select(FavoriteProject.project_id).where(
+                    FavoriteProject.user_id == user_id
+                )
+            ).all()
+        )
 
     keyword_value = keyword.strip().casefold()
     school_value = school.strip().casefold()
@@ -970,6 +1228,8 @@ def list_projects(
     projects = []
 
     for project, profile, owner in rows:
+        if project.moderation_status == "removed":
+            continue
         required_skills = profile.required_skills if profile else []
         searchable = " ".join(
             (
@@ -1008,6 +1268,8 @@ def list_projects(
                 "raw_text": project.raw_text or "",
                 "status": project.status,
                 "scope": project.scope,
+                "moderation_status": project.moderation_status,
+                "moderation_reason": project.moderation_reason or "",
                 "created_at": project.created_at,
                 "required_skills": required_skills,
                 "time_requirement": profile.time_requirement if profile else "未知",
@@ -1016,6 +1278,7 @@ def list_projects(
                 "background": profile.background if profile else "",
                 "total_score": record.total_score if record else None,
                 "interested": bool(record and record.status == "interested"),
+                "favorited": project.id in favorite_project_ids,
             }
         )
 
@@ -1056,6 +1319,11 @@ def get_project(
     project = db.get(Project, project_id)
     if not project:
         return {"success": False, "message": "项目不存在"}
+    if (
+        project.moderation_status == "removed"
+        and user_id != project.owner_id
+    ):
+        return {"success": False, "message": "该项目已被平台下架"}
 
     profile = db.scalar(
         select(ProjectProfile).where(ProjectProfile.project_id == project_id)
@@ -1066,6 +1334,16 @@ def get_project(
             select(MatchRecord).where(
                 MatchRecord.user_id == user_id,
                 MatchRecord.project_id == project_id,
+            )
+        )
+        if user_id is not None
+        else None
+    )
+    favorite = (
+        db.scalar(
+            select(FavoriteProject).where(
+                FavoriteProject.user_id == user_id,
+                FavoriteProject.project_id == project_id,
             )
         )
         if user_id is not None
@@ -1091,6 +1369,13 @@ def get_project(
         "background": profile.background if profile else "",
         "updated_at": profile.updated_at if profile else None,
         "interested": bool(match_record and match_record.status == "interested"),
+        "favorited": favorite is not None,
+        "moderation_status": project.moderation_status,
+        "moderation_reason": (
+            project.moderation_reason or ""
+            if user_id == project.owner_id
+            else ""
+        ),
     }
 
 
@@ -1127,6 +1412,144 @@ def get_my_projects(user_id: int, db: Session = Depends(get_db)):
         )
 
     return {"success": True, "projects": projects}
+
+
+def _serialize_favorite(project: Project, favorite: FavoriteProject) -> dict:
+    profile = project.profile
+    return {
+        "favorite_id": favorite.id,
+        "project_id": project.id,
+        "name": project.name,
+        "owner_id": project.owner_id,
+        "owner_username": project.owner.username if project.owner else "",
+        "owner_school": project.owner.school if project.owner else "",
+        "status": project.status,
+        "scope": project.scope,
+        "raw_text": project.raw_text or "",
+        "required_skills": profile.required_skills if profile else [],
+        "project_type": profile.project_type if profile else "",
+        "time_requirement": profile.time_requirement if profile else "未知",
+        "created_at": project.created_at,
+        "favorited_at": favorite.created_at,
+    }
+
+
+@app.post("/api/favorites")
+def add_favorite(request: InterestRequest, db: Session = Depends(get_db)):
+    if db.get(User, request.user_id) is None:
+        return {"success": False, "message": "用户不存在"}
+    if db.get(Project, request.project_id) is None:
+        return {"success": False, "message": "项目不存在"}
+    favorite = db.scalar(
+        select(FavoriteProject).where(
+            FavoriteProject.user_id == request.user_id,
+            FavoriteProject.project_id == request.project_id,
+        )
+    )
+    if favorite is not None:
+        return {"success": True, "favorited": True, "idempotent": True}
+    db.add(FavoriteProject(user_id=request.user_id, project_id=request.project_id))
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return {"success": True, "favorited": True, "idempotent": True}
+    return {"success": True, "favorited": True}
+
+
+@app.delete("/api/favorites/{project_id}")
+def remove_favorite(project_id: int, user_id: int, db: Session = Depends(get_db)):
+    favorite = db.scalar(
+        select(FavoriteProject).where(
+            FavoriteProject.user_id == user_id,
+            FavoriteProject.project_id == project_id,
+        )
+    )
+    if favorite is None:
+        return {"success": True, "favorited": False, "idempotent": True}
+    db.delete(favorite)
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        return {"success": False, "message": "取消收藏失败"}
+    return {"success": True, "favorited": False}
+
+
+@app.get("/api/favorites/{user_id}")
+def get_favorites(user_id: int, db: Session = Depends(get_db)):
+    if db.get(User, user_id) is None:
+        return {"success": False, "message": "用户不存在"}
+    rows = db.execute(
+        select(Project, FavoriteProject)
+        .join(FavoriteProject, FavoriteProject.project_id == Project.id)
+        .where(FavoriteProject.user_id == user_id)
+        .order_by(FavoriteProject.created_at.desc())
+    ).all()
+    return {
+        "success": True,
+        "favorites": [_serialize_favorite(project, favorite) for project, favorite in rows],
+    }
+
+
+@app.post("/api/feedback")
+def create_feedback(request: FeedbackRequest, db: Session = Depends(get_db)):
+    if db.get(User, request.user_id) is None:
+        return {"success": False, "message": "用户不存在"}
+    allowed_categories = {
+        "功能建议", "匹配不准确", "使用问题", "内容举报", "账号问题", "其他"
+    }
+    category = request.category.strip()
+    content = request.content.strip()
+    if category not in allowed_categories:
+        return {"success": False, "message": "反馈类型无效"}
+    if not content:
+        return {"success": False, "message": "请填写反馈内容"}
+    if len(content) > 3000:
+        return {"success": False, "message": "反馈内容不能超过3000字"}
+    feedback = Feedback(
+        user_id=request.user_id,
+        category=category,
+        content=content,
+        contact_email=request.contact_email.strip()[:255] or None,
+        source_page=request.source_page.strip()[:80] or None,
+    )
+    db.add(feedback)
+    try:
+        db.commit()
+        db.refresh(feedback)
+    except SQLAlchemyError:
+        db.rollback()
+        return {"success": False, "message": "反馈提交失败"}
+    return {"success": True, "feedback_id": feedback.id}
+
+
+@app.get("/api/my_feedback/{user_id}")
+def get_my_feedback(user_id: int, db: Session = Depends(get_db)):
+    if db.get(User, user_id) is None:
+        return {"success": False, "message": "用户不存在"}
+    feedbacks = db.scalars(
+        select(Feedback)
+        .where(Feedback.user_id == user_id)
+        .order_by(Feedback.created_at.desc())
+    ).all()
+    return {
+        "success": True,
+        "feedback": [
+            {
+                "feedback_id": item.id,
+                "category": item.category,
+                "content": item.content,
+                "contact_email": item.contact_email or "",
+                "source_page": item.source_page or "",
+                "status": item.status,
+                "admin_reply": item.admin_reply or "",
+                "created_at": item.created_at,
+                "updated_at": item.updated_at,
+            }
+            for item in feedbacks
+        ],
+    }
 
 
 @app.post("/api/interest")
@@ -1924,7 +2347,10 @@ def get_match_list(
         select(Project, ProjectProfile, User)
         .join(ProjectProfile, ProjectProfile.project_id == Project.id)
         .join(User, User.id == Project.owner_id)
-        .where(Project.status == "recruiting")
+        .where(
+            Project.status == "recruiting",
+            Project.moderation_status == "active",
+        )
     )
     if scope == "same_school":
         if not current_user.school:
