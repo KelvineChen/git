@@ -166,8 +166,11 @@ def inject_styles() -> None:
             color: #ffffff;
             box-shadow: 0 12px 30px rgba(22, 35, 59, .16);
         }
-        .zl-hero h1, .zl-hero p { color: #ffffff; }
-        .zl-hero p { margin: .45rem 0 0; color: #d7e1f2; font-size: 1rem; }
+        .zl-hero h1 {
+            color: #ffffff !important;
+            -webkit-text-fill-color: #ffffff !important;
+        }
+        .zl-hero p { margin: .45rem 0 0; color: #d7e1f2 !important; font-size: 1rem; }
         .zl-section { margin: 1.7rem 0 .75rem; }
         .zl-section-title { color: var(--ink); font-size: 1.15rem; font-weight: 700; }
         .zl-section-caption { color: var(--muted); font-size: .9rem; margin-top: .2rem; }
@@ -205,6 +208,25 @@ def inject_styles() -> None:
             color: var(--muted);
             text-align: center;
         }
+        .zl-notification {
+            background: var(--surface);
+            border: 1px solid var(--line);
+            border-left: 4px solid #cbd5e1;
+            border-radius: 10px;
+            padding: 1rem 1.1rem;
+            margin: .7rem 0 .45rem;
+        }
+        .zl-notification-unread {
+            border-left-color: var(--blue);
+            background: #f8fbff;
+        }
+        .zl-notification-title {
+            color: var(--ink);
+            font-weight: 700;
+            margin-bottom: .3rem;
+        }
+        .zl-notification-content { color: #46546a; margin-bottom: .45rem; }
+        .zl-notification-time { color: var(--muted); font-size: .82rem; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -418,6 +440,40 @@ def render_project_status(status: str) -> None:
     )
 
 
+def render_mutual_contact(candidate_user_id: int, project_id: int) -> None:
+    with st.spinner("正在读取已解锁的联系方式..."):
+        result = get_api(
+            f"/api/match/{candidate_user_id}/{project_id}"
+            f"?viewer_id={st.session_state['user_id']}"
+        )
+    if not result or not result.get("mutual"):
+        return
+
+    counterpart = result.get("counterpart") or {}
+    method_labels = {
+        "wechat": "微信",
+        "qq": "QQ",
+        "phone": "手机号",
+        "other": "其他联系方式",
+    }
+    with st.expander(
+        f"联系 {counterpart.get('username') or '对方'}",
+        expanded=True,
+    ):
+        st.markdown("**账号邮箱**")
+        st.code(counterpart.get("email") or "未提供")
+        contact_value = counterpart.get("contact_value") or ""
+        if contact_value:
+            method = method_labels.get(
+                counterpart.get("contact_method"), "自选联系方式"
+            )
+            st.markdown(f"**{method}**")
+            st.code(contact_value)
+        else:
+            st.caption("对方未开放额外联系方式，可先通过账号邮箱联系。")
+        st.caption("联系方式仅因双方互选成功而展示，请尊重对方隐私。")
+
+
 def render_candidate_card(candidate: dict, project_id: int) -> None:
     user_id = candidate.get("user_id")
     owner_status = candidate.get("owner_status", "pending")
@@ -460,7 +516,8 @@ def render_candidate_card(candidate: dict, project_id: int) -> None:
 
         st.info(candidate.get("explanation") or "暂无匹配解释")
         if mutual:
-            st.success("双方已匹配，联系方式将在下一阶段开放")
+            st.success("双方已匹配，联系方式已解锁")
+            render_mutual_contact(user_id, project_id)
         elif owner_status == "rejected":
             st.warning("当前标记为暂不考虑，你可以随时重新选择")
         else:
@@ -533,6 +590,11 @@ def render_my_match_card(match: dict) -> None:
                 st.caption(f"{label} {value:.0%}")
                 st.progress(value)
         st.write(match.get("explanation") or "暂无匹配解释")
+        if relationship_status == "mutual":
+            render_mutual_contact(
+                st.session_state["user_id"],
+                project_id,
+            )
         st.button(
             "查看项目详情",
             key=f"my_match_detail_{project_id}",
@@ -1047,6 +1109,21 @@ def show_profile_page() -> None:
                 set_profile_draft(existing)
                 st.success("画像加载成功")
 
+    contact_loaded_key = f"contact_loaded_{user_id}"
+    if not st.session_state.get(contact_loaded_key):
+        with st.spinner("正在读取联系方式设置..."):
+            contact_data = get_api(f"/api/profile/{user_id}", show_error=False)
+        st.session_state["contact_method"] = (
+            (contact_data or {}).get("contact_method") or ""
+        )
+        st.session_state["contact_value"] = (
+            (contact_data or {}).get("contact_value") or ""
+        )
+        st.session_state["contact_visible"] = bool(
+            (contact_data or {}).get("contact_visible", False)
+        )
+        st.session_state[contact_loaded_key] = True
+
     raw_text = st.text_area(
         "自然语言描述",
         placeholder="请描述你的技能、经历、兴趣、协作偏好和每周可投入时间",
@@ -1109,6 +1186,58 @@ def show_profile_page() -> None:
                     )
                 if result:
                     st.success("画像保存成功")
+
+    st.divider()
+    st.subheader("匹配后的联系方式")
+    st.caption(
+        "账号邮箱只会在双方互选成功后向对方展示。你还可以选择开放一种额外联系方式。"
+    )
+    contact_labels = {
+        "": "不填写",
+        "wechat": "微信",
+        "qq": "QQ",
+        "phone": "手机号",
+        "other": "其他",
+    }
+    with st.form("contact_settings_form"):
+        st.selectbox(
+            "联系方式类型",
+            list(contact_labels),
+            format_func=lambda value: contact_labels[value],
+            key="contact_method",
+        )
+        st.text_input(
+            "联系方式内容",
+            placeholder="填写微信号、QQ号、手机号或其他联系方式",
+            key="contact_value",
+        )
+        st.checkbox(
+            "双方匹配后允许向对方展示这项联系方式",
+            key="contact_visible",
+        )
+        save_contact = st.form_submit_button(
+            "保存联系方式设置",
+            type="primary",
+            use_container_width=True,
+        )
+    if save_contact:
+        method = st.session_state["contact_method"]
+        value = st.session_state["contact_value"].strip()
+        if value and not method:
+            st.error("填写联系方式内容后，请选择对应类型")
+        else:
+            with st.spinner("正在保存联系方式设置..."):
+                result = post_api(
+                    "/api/profile/contact",
+                    {
+                        "user_id": user_id,
+                        "contact_method": method,
+                        "contact_value": value,
+                        "contact_visible": st.session_state["contact_visible"],
+                    },
+                )
+            if result:
+                st.success("联系方式设置已保存")
 
 
 def show_publish_project_page() -> None:
@@ -1263,6 +1392,91 @@ def show_my_matches_page() -> None:
         render_my_match_card(match)
 
 
+def show_notifications_page() -> None:
+    if (
+        st.session_state.get("selected_project_id")
+        and st.session_state.get("project_return_page") == "通知"
+    ):
+        show_project_detail()
+        return
+
+    render_page_heading("通知中心", "集中查看申请进度、互选结果与项目状态变化。")
+    user_id = st.session_state["user_id"]
+    unread_only = st.segmented_control(
+        "通知范围",
+        options=["全部通知", "仅看未读"],
+        default="全部通知",
+        key="notification_filter",
+    )
+    query = "?unread_only=true" if unread_only == "仅看未读" else ""
+    with st.spinner("正在读取通知..."):
+        result = get_api(f"/api/notifications/{user_id}{query}")
+    if result is None or not result.get("success"):
+        return
+
+    notifications = result.get("notifications", [])
+    unread_count = int(result.get("unread_count", 0))
+    heading, action = st.columns([4, 1])
+    heading.metric("未读通知", unread_count)
+    if action.button(
+        "全部标记已读",
+        use_container_width=True,
+        disabled=unread_count == 0,
+    ):
+        with st.spinner("正在更新通知状态..."):
+            update_result = post_api(
+                "/api/notifications/read-all",
+                {"user_id": user_id},
+            )
+        if update_result and update_result.get("success"):
+            st.success("全部通知已标记为已读")
+            st.rerun()
+
+    if not notifications:
+        message = "目前没有未读通知" if unread_only == "仅看未读" else "目前还没有通知"
+        st.markdown(f"<div class='zl-empty'>{message}</div>", unsafe_allow_html=True)
+        return
+
+    for item in notifications:
+        notification_id = item.get("notification_id")
+        is_read = bool(item.get("is_read"))
+        css_class = "zl-notification" if is_read else "zl-notification zl-notification-unread"
+        created_at = str(item.get("created_at") or "").replace("T", " ")[:16]
+        st.markdown(
+            f"""
+            <div class='{css_class}'>
+                <div class='zl-notification-title'>{escape(str(item.get('title') or '通知'))}</div>
+                <div class='zl-notification-content'>{escape(str(item.get('content') or ''))}</div>
+                <div class='zl-notification-time'>{escape(created_at or '时间未知')}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        controls = st.columns([1, 1, 4])
+        project_id = item.get("related_project_id")
+        if project_id:
+            controls[0].button(
+                "查看项目",
+                key=f"notification_project_{notification_id}",
+                on_click=open_project_detail,
+                args=(int(project_id), "通知"),
+                use_container_width=True,
+            )
+        if not is_read and controls[1].button(
+            "标记已读",
+            key=f"notification_read_{notification_id}",
+            use_container_width=True,
+        ):
+            with st.spinner("正在更新通知状态..."):
+                update_result = post_api(
+                    f"/api/notifications/{notification_id}/read",
+                    {"user_id": user_id},
+                )
+            if update_result and update_result.get("success"):
+                st.success("通知已标记为已读")
+                st.rerun()
+
+
 def show_my_projects_page() -> None:
     st.header("我的项目")
     with st.spinner("正在读取项目列表..."):
@@ -1337,6 +1551,16 @@ def show_my_projects_page() -> None:
 
 def show_authenticated_app() -> None:
     show_queued_success()
+    notification_summary = get_api(
+        f"/api/notifications/{st.session_state['user_id']}?unread_only=true&page_size=1",
+        show_error=False,
+        timeout=5,
+    )
+    unread_count = (
+        int(notification_summary.get("unread_count", 0))
+        if notification_summary and notification_summary.get("success")
+        else 0
+    )
     with st.sidebar:
         st.markdown("### 知遇 **LinkLab**")
         st.caption("科研协作匹配平台")
@@ -1351,6 +1575,7 @@ def show_authenticated_app() -> None:
             "发现项目",
             "匹配推荐",
             "我的匹配",
+            "通知",
             "我的画像",
             "发布项目",
             "我的项目",
@@ -1358,11 +1583,16 @@ def show_authenticated_app() -> None:
         current_page = st.session_state.get("app_page", "首页")
         if current_page not in pages:
             current_page = "首页"
+        navigation_labels = {
+            item: f"通知 ({unread_count})" if item == "通知" and unread_count else item
+            for item in pages
+        }
         page = st.radio(
             "页面导航",
             pages,
             index=pages.index(current_page),
             key="app_page",
+            format_func=lambda item: navigation_labels[item],
         )
 
         st.divider()
@@ -1377,6 +1607,7 @@ def show_authenticated_app() -> None:
         "发布项目": show_publish_project_page,
         "匹配推荐": show_match_recommendations_page,
         "我的匹配": show_my_matches_page,
+        "通知": show_notifications_page,
         "我的项目": show_my_projects_page,
     }
     pages[page]()

@@ -63,6 +63,28 @@ def init_db() -> None:
                 )
             )
 
+    profile_columns = {
+        column["name"] for column in inspect(engine).get_columns("user_profiles")
+    }
+    profile_migrations = {
+        "contact_method": "VARCHAR(30)",
+        "contact_value": "VARCHAR(255)",
+        "contact_visible": "BOOLEAN NOT NULL DEFAULT 0",
+    }
+    missing_profile_columns = [
+        (name, column_type)
+        for name, column_type in profile_migrations.items()
+        if name not in profile_columns
+    ]
+    if missing_profile_columns:
+        with engine.begin() as connection:
+            for name, column_type in missing_profile_columns:
+                connection.execute(
+                    text(
+                        f"ALTER TABLE user_profiles ADD COLUMN {name} {column_type}"
+                    )
+                )
+
 
 def get_db() -> Generator[Session, None, None]:
     """Yield one database session per request and always close it."""

@@ -23,6 +23,7 @@ from ai_service import (
 from database import DATABASE_URL, get_db, init_db
 from models import (
     MatchRecord,
+    Notification,
     OwnerInterest,
     Project,
     ProjectProfile,
@@ -115,6 +116,17 @@ class OwnerCandidateActionRequest(BaseModel):
     action: str
 
 
+class ContactSettingsRequest(BaseModel):
+    user_id: int
+    contact_method: str = ""
+    contact_value: str = ""
+    contact_visible: bool = False
+
+
+class NotificationActionRequest(BaseModel):
+    user_id: int
+
+
 class ProjectStatusRequest(BaseModel):
     owner_id: int
     project_id: int
@@ -161,6 +173,7 @@ def _verify_password(password: str, password_hash: str | None) -> bool:
 def _verify_bcrypt_password(password: str, password_hash: str | None) -> bool:
     if not password_hash:
         return False
+
     try:
         return bcrypt.checkpw(
             password.encode("utf-8"),
@@ -168,6 +181,28 @@ def _verify_bcrypt_password(password: str, password_hash: str | None) -> bool:
         )
     except (ValueError, TypeError):
         return False
+
+
+def _add_notification(
+    db: Session,
+    *,
+    user_id: int,
+    notification_type: str,
+    title: str,
+    content: str,
+    related_project_id: int | None = None,
+    related_user_id: int | None = None,
+) -> None:
+    db.add(
+        Notification(
+            user_id=user_id,
+            type=notification_type,
+            title=title,
+            content=content,
+            related_project_id=related_project_id,
+            related_user_id=related_user_id,
+        )
+    )
 
 
 @app.post("/api/auth/register")
@@ -673,6 +708,9 @@ def save_profile(request: SaveProfileRequest, db: Session = Depends(get_db)):
 
     try:
         db.execute(
+            delete(OwnerInterest).where(OwnerInterest.user_id == request.user_id)
+        )
+        db.execute(
             delete(MatchRecord).where(MatchRecord.user_id == request.user_id)
         )
         db.commit()
@@ -733,8 +771,34 @@ def update_project_status(
     if request.status not in allowed_statuses:
         return {"success": False, "message": "项目状态无效"}
 
+    previous_status = project.status
     project.status = request.status
     try:
+        if previous_status != request.status:
+            status_labels = {
+                "recruiting": "恢复招募",
+                "full": "已满员",
+                "closed": "已关闭",
+                "completed": "已完成",
+            }
+            interested_user_ids = db.scalars(
+                select(MatchRecord.user_id).where(
+                    MatchRecord.project_id == project.id,
+                    MatchRecord.status == "interested",
+                )
+            ).all()
+            for interested_user_id in set(interested_user_ids):
+                _add_notification(
+                    db,
+                    user_id=interested_user_id,
+                    notification_type="project_status_changed",
+                    title="项目状态发生变化",
+                    content=(
+                        f"你关注的项目“{project.name}”"
+                        f"已更新为{status_labels[request.status]}。"
+                    ),
+                    related_project_id=project.id,
+                )
         db.commit()
     except SQLAlchemyError:
         db.rollback()
@@ -755,6 +819,21 @@ def delete_project(
         return {"success": False, "message": "无权删除该项目"}
 
     try:
+        interested_user_ids = db.scalars(
+            select(MatchRecord.user_id).where(
+                MatchRecord.project_id == project_id,
+                MatchRecord.status == "interested",
+            )
+        ).all()
+        for interested_user_id in set(interested_user_ids):
+            _add_notification(
+                db,
+                user_id=interested_user_id,
+                notification_type="project_deleted",
+                title="项目已被删除",
+                content=f"你关注的项目“{project.name}”已被发起人删除。",
+                related_user_id=project.owner_id,
+            )
         db.execute(
             delete(OwnerInterest).where(OwnerInterest.project_id == project_id)
         )
@@ -788,7 +867,57 @@ def get_profile(user_id: int, db: Session = Depends(get_db)):
         "interests": profile.interests,
         "preference": profile.preference,
         "time_commitment": profile.time_commitment,
+        "contact_method": profile.contact_method or "",
+        "contact_value": profile.contact_value or "",
+        "contact_visible": bool(profile.contact_visible),
         "updated_at": profile.updated_at,
+    }
+
+
+@app.post("/api/profile/contact")
+def save_contact_settings(
+    request: ContactSettingsRequest,
+    db: Session = Depends(get_db),
+):
+    user = db.get(User, request.user_id)
+    if user is None:
+        return {"success": False, "message": "用户不存在"}
+
+    method = request.contact_method.strip().lower()
+    value = request.contact_value.strip()
+    allowed_methods = {"", "wechat", "qq", "phone", "other"}
+    if method not in allowed_methods:
+        return {"success": False, "message": "联系方式类型无效"}
+    if value and not method:
+        return {"success": False, "message": "请选择联系方式类型"}
+    if len(value) > 255:
+        return {"success": False, "message": "联系方式内容过长"}
+
+    profile = db.scalar(
+        select(UserProfile).where(UserProfile.user_id == request.user_id)
+    )
+    if profile is None:
+        profile = UserProfile(
+            user_id=request.user_id,
+            skills=[],
+            skill_levels={},
+            experience=[],
+            interests=[],
+            time_commitment="未知",
+        )
+        db.add(profile)
+    profile.contact_method = method or None
+    profile.contact_value = value or None
+    profile.contact_visible = bool(request.contact_visible and value)
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        return {"success": False, "message": "联系方式保存失败"}
+    return {
+        "success": True,
+        "contact_method": profile.contact_method or "",
+        "contact_visible": bool(profile.contact_visible),
     }
 
 
@@ -1002,7 +1131,8 @@ def get_my_projects(user_id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/interest")
 def mark_interest(request: InterestRequest, db: Session = Depends(get_db)):
-    if db.get(User, request.user_id) is None:
+    interested_user = db.get(User, request.user_id)
+    if interested_user is None:
         return {"success": False, "message": "用户不存在"}
     project = db.get(Project, request.project_id)
     if project is None:
@@ -1019,6 +1149,7 @@ def mark_interest(request: InterestRequest, db: Session = Depends(get_db)):
             MatchRecord.project_id == request.project_id,
         )
     ).all()
+    already_interested = any(record.status == "interested" for record in records)
     if records:
         for record in records:
             record.status = "interested"
@@ -1037,6 +1168,16 @@ def mark_interest(request: InterestRequest, db: Session = Depends(get_db)):
         )
 
     try:
+        if not already_interested:
+            _add_notification(
+                db,
+                user_id=project.owner_id,
+                notification_type="candidate_interested",
+                title="有新的候选人表达意向",
+                content=f"{interested_user.username} 对项目“{project.name}”感兴趣。",
+                related_project_id=project.id,
+                related_user_id=interested_user.id,
+            )
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -1211,6 +1352,69 @@ def get_my_matches(user_id: int, db: Session = Depends(get_db)):
     return {"success": True, "matches": matches}
 
 
+def _contact_payload(user: User, profile: UserProfile | None) -> dict:
+    payload = {
+        "user_id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "contact_method": "",
+        "contact_value": "",
+    }
+    if profile and profile.contact_visible and profile.contact_value:
+        payload["contact_method"] = profile.contact_method or "other"
+        payload["contact_value"] = profile.contact_value
+    return payload
+
+
+@app.get("/api/match/{user_id}/{project_id}")
+def get_mutual_match_detail(
+    user_id: int,
+    project_id: int,
+    viewer_id: int,
+    db: Session = Depends(get_db),
+):
+    """Reveal the counterpart's contact only after a mutual match."""
+    project = db.get(Project, project_id)
+    candidate = db.get(User, user_id)
+    if project is None or candidate is None:
+        return {"success": False, "message": "匹配关系不存在"}
+    if viewer_id not in {user_id, project.owner_id}:
+        return {"success": False, "message": "无权查看该匹配信息"}
+
+    user_interested = db.scalar(
+        select(MatchRecord.id).where(
+            MatchRecord.user_id == user_id,
+            MatchRecord.project_id == project_id,
+            MatchRecord.status == "interested",
+        )
+    )
+    owner_interested = db.scalar(
+        select(OwnerInterest.id).where(
+            OwnerInterest.project_id == project_id,
+            OwnerInterest.user_id == user_id,
+            OwnerInterest.status == "interested",
+        )
+    )
+    if not user_interested or not owner_interested:
+        return {
+            "success": True,
+            "mutual": False,
+            "message": "双方尚未完成互选",
+        }
+
+    counterpart = candidate if viewer_id == project.owner_id else db.get(User, project.owner_id)
+    counterpart_profile = db.scalar(
+        select(UserProfile).where(UserProfile.user_id == counterpart.id)
+    )
+    return {
+        "success": True,
+        "mutual": True,
+        "project_id": project.id,
+        "project_name": project.name,
+        "counterpart": _contact_payload(counterpart, counterpart_profile),
+    }
+
+
 @app.post("/api/owner_candidate_action")
 def owner_candidate_action(
     request: OwnerCandidateActionRequest,
@@ -1239,6 +1443,7 @@ def owner_candidate_action(
             OwnerInterest.user_id == request.user_id,
         )
     )
+    previous_status = decision.status if decision else "pending"
     if decision is None:
         decision = OwnerInterest(
             project_id=request.project_id,
@@ -1249,6 +1454,43 @@ def owner_candidate_action(
     else:
         decision.status = request.action
     try:
+        if previous_status != request.action:
+            candidate = db.get(User, request.user_id)
+            if request.action == "interested":
+                _add_notification(
+                    db,
+                    user_id=request.user_id,
+                    notification_type="mutual_match",
+                    title="双方匹配成功",
+                    content=(
+                        f"项目“{project.name}”的发起人也对你感兴趣，"
+                        "联系方式已解锁。"
+                    ),
+                    related_project_id=project.id,
+                    related_user_id=project.owner_id,
+                )
+                _add_notification(
+                    db,
+                    user_id=request.owner_id,
+                    notification_type="mutual_match",
+                    title="双方匹配成功",
+                    content=(
+                        f"你与候选人{candidate.username}在项目“{project.name}”"
+                        "中完成互选，联系方式已解锁。"
+                    ),
+                    related_project_id=project.id,
+                    related_user_id=request.user_id,
+                )
+            else:
+                _add_notification(
+                    db,
+                    user_id=request.user_id,
+                    notification_type="candidate_declined",
+                    title="项目方已更新处理结果",
+                    content=f"项目“{project.name}”的发起人当前暂不考虑你的申请。",
+                    related_project_id=project.id,
+                    related_user_id=request.owner_id,
+                )
         db.commit()
     except SQLAlchemyError:
         db.rollback()
@@ -1328,6 +1570,101 @@ def check_mutual(request: InterestRequest, db: Session = Depends(get_db)):
         "success": True,
         "mutual": bool(user_interested and owner_interested),
     }
+
+
+@app.get("/api/notifications/{user_id}")
+def get_notifications(
+    user_id: int,
+    unread_only: bool = False,
+    page: int = 1,
+    page_size: int = 30,
+    db: Session = Depends(get_db),
+):
+    if db.get(User, user_id) is None:
+        return {"success": False, "message": "用户不存在"}
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 50)
+    query = select(Notification).where(Notification.user_id == user_id)
+    if unread_only:
+        query = query.where(Notification.is_read.is_(False))
+    notifications = db.scalars(
+        query.order_by(Notification.created_at.desc(), Notification.id.desc())
+    ).all()
+    unread_count = len(
+        db.scalars(
+            select(Notification.id).where(
+                Notification.user_id == user_id,
+                Notification.is_read.is_(False),
+            )
+        ).all()
+    )
+    total = len(notifications)
+    start = (page - 1) * page_size
+    items = notifications[start : start + page_size]
+    return {
+        "success": True,
+        "notifications": [
+            {
+                "notification_id": item.id,
+                "type": item.type,
+                "title": item.title,
+                "content": item.content,
+                "related_project_id": item.related_project_id,
+                "related_user_id": item.related_user_id,
+                "is_read": item.is_read,
+                "created_at": item.created_at,
+            }
+            for item in items
+        ],
+        "unread_count": unread_count,
+        "pagination": {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": max((total + page_size - 1) // page_size, 1),
+        },
+    }
+
+
+@app.post("/api/notifications/{notification_id}/read")
+def mark_notification_read(
+    notification_id: int,
+    request: NotificationActionRequest,
+    db: Session = Depends(get_db),
+):
+    notification = db.get(Notification, notification_id)
+    if notification is None:
+        return {"success": False, "message": "通知不存在"}
+    if notification.user_id != request.user_id:
+        return {"success": False, "message": "无权修改该通知"}
+    notification.is_read = True
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        return {"success": False, "message": "通知状态更新失败"}
+    return {"success": True}
+
+
+@app.post("/api/notifications/read-all")
+def mark_all_notifications_read(
+    request: NotificationActionRequest,
+    db: Session = Depends(get_db),
+):
+    notifications = db.scalars(
+        select(Notification).where(
+            Notification.user_id == request.user_id,
+            Notification.is_read.is_(False),
+        )
+    ).all()
+    for notification in notifications:
+        notification.is_read = True
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        return {"success": False, "message": "通知状态更新失败"}
+    return {"success": True, "updated_count": len(notifications)}
 
 @app.post("/api/parse_profile")
 def parse_profile(request: ProfileRequest):

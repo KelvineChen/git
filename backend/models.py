@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, JSON, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -26,6 +26,7 @@ class User(Base):
     profile: Mapped["UserProfile | None"] = relationship(back_populates="user")
     projects: Mapped[list["Project"]] = relationship(back_populates="owner")
     match_records: Mapped[list["MatchRecord"]] = relationship(back_populates="user")
+    notifications: Mapped[list["Notification"]] = relationship(back_populates="user")
 
 
 class UserProfile(Base):
@@ -40,6 +41,11 @@ class UserProfile(Base):
     interests: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     preference: Mapped[str | None] = mapped_column(String, nullable=True)
     time_commitment: Mapped[str | None] = mapped_column(String, nullable=True)
+    contact_method: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    contact_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    contact_visible: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, onupdate=datetime.now, nullable=False
     )
@@ -120,3 +126,25 @@ class OwnerInterest(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.now, nullable=False
     )
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id"), nullable=False, index=True
+    )
+    type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    related_project_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    related_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    is_read: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, nullable=False
+    )
+
+    user: Mapped[User] = relationship(back_populates="notifications")
