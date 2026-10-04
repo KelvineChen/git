@@ -128,11 +128,15 @@ def queue_success(message: str) -> None:
     st.session_state["success_message"] = message
 
 
+def show_success(message: str) -> None:
+    st.success(message)
+    st.toast(message, icon=":material/check_circle:")
+
+
 def show_queued_success() -> None:
     message = st.session_state.pop("success_message", None)
     if message:
-        st.success(message)
-        st.toast(message, icon=":material/check_circle:")
+        show_success(message)
 
 
 def list_to_text(values: list | None) -> str:
@@ -395,7 +399,7 @@ def render_candidate_card(candidate: dict, project_id: int) -> None:
                     },
                 )
             if result:
-                st.success("候选人状态已更新")
+                queue_success("候选人状态已更新")
                 st.rerun()
 
 
@@ -540,7 +544,7 @@ def show_project_detail() -> None:
                 {"user_id": st.session_state["user_id"], "project_id": project_id},
             )
         if result:
-            st.success("已记录你的意向")
+            show_success("已记录你的意向")
 
     favorited = bool(project.get("favorited"))
     if st.button(
@@ -555,7 +559,7 @@ def show_project_detail() -> None:
                 {"user_id": st.session_state["user_id"], "project_id": project_id},
             )
         if result and result.get("favorited"):
-            st.success("已加入收藏")
+            queue_success("已加入收藏")
             st.rerun()
 
 
@@ -614,7 +618,7 @@ def render_match_card(match: dict, *, source: str) -> None:
                     if result and result.get("interested"):
                         match["interested"] = True
                         match["status"] = "interested"
-                        st.success("已记录你的意向")
+                        queue_success("已记录你的意向")
                         st.rerun()
         with action_right:
             st.button(
@@ -689,7 +693,7 @@ def render_project_card(project: dict) -> None:
                         },
                     )
                 if result:
-                    st.success("已记录你的意向")
+                    queue_success("已记录你的意向")
                     st.rerun()
         with favorite_column:
             favorited = bool(project.get("favorited"))
@@ -709,7 +713,7 @@ def render_project_card(project: dict) -> None:
                         },
                     )
                 if result and result.get("favorited"):
-                    st.success("已加入收藏")
+                    queue_success("已加入收藏")
                     st.rerun()
         with status_column:
             if project.get("total_score") is not None:
@@ -1002,7 +1006,7 @@ def show_auth_page() -> None:
                                 },
                             )
                         if result:
-                            st.success("注册成功，请切换到登录")
+                            show_success("注册成功，请切换到登录")
             else:
                 st.markdown(
                     '<div class="zl-auth-panel-head"><h2>欢迎回来</h2>'
@@ -1159,7 +1163,7 @@ def show_profile_page() -> None:
                         },
                     )
                 if result:
-                    st.success("画像保存成功")
+                    show_success("画像保存成功")
 
     st.divider()
     st.subheader("匹配后的联系方式")
@@ -1211,7 +1215,7 @@ def show_profile_page() -> None:
                     },
                 )
             if result:
-                st.success("联系方式设置已保存")
+                show_success("联系方式设置已保存")
 
 
 def show_publish_project_page() -> None:
@@ -1300,7 +1304,7 @@ def show_publish_project_page() -> None:
                         },
                     )
                 if result:
-                    st.success(f"项目发布成功，项目ID：{result['project_id']}")
+                    show_success(f"项目发布成功，项目ID：{result['project_id']}")
 
 
 def show_match_recommendations_page() -> None:
@@ -1317,7 +1321,7 @@ def show_match_recommendations_page() -> None:
     )
     success_message = st.session_state.pop("interest_success_message", None)
     if success_message:
-        st.success(success_message)
+        show_success(success_message)
 
     scope_label = st.radio(
         "推荐范围",
@@ -1429,7 +1433,7 @@ def show_notifications_page() -> None:
                 {"user_id": user_id},
             )
         if update_result and update_result.get("success"):
-            st.success("全部通知已标记为已读")
+            queue_success("全部通知已标记为已读")
             st.rerun()
 
     if not notifications:
@@ -1473,7 +1477,7 @@ def show_notifications_page() -> None:
                     {"user_id": user_id},
                 )
             if update_result and update_result.get("success"):
-                st.success("通知已标记为已读")
+                queue_success("通知已标记为已读")
                 st.rerun()
 
 
@@ -1614,7 +1618,7 @@ def show_favorites_page() -> None:
                             {"user_id": st.session_state["user_id"]},
                         )
                     if removed and not removed.get("favorited"):
-                        st.success("已取消收藏")
+                        queue_success("已取消收藏")
                         st.rerun()
 
 
@@ -1647,7 +1651,7 @@ def show_feedback_page() -> None:
                 },
             )
         if result:
-            st.success("反馈已提交，感谢你的建议")
+            show_success("反馈已提交，感谢你的建议")
 
     st.markdown("### 我的反馈记录")
     with st.spinner("正在读取反馈记录..."):

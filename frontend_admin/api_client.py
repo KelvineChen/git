@@ -54,6 +54,7 @@ def api_request(
         return None
 
     st.success(success_message)
+    st.toast(success_message, icon=":material/check_circle:")
     if isinstance(result, dict) and "data" in result:
         return result["data"]
     return result
