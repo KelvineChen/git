@@ -1,6 +1,7 @@
 import streamlit as st
 
 from api_client import api_request
+from ui import render_empty_state, render_metric_tile, render_page_intro
 
 
 st.set_page_config(
@@ -35,7 +36,7 @@ def chart_from_counts(counts: dict, title: str) -> None:
     )
 
 
-st.title("反馈处理")
+render_page_intro("反馈处理", "查看用户意见、跟踪处理状态并回复结果。", eyebrow="用户运营")
 admin_token = st.session_state.get("admin_token")
 if not admin_token:
     st.warning("请先登录管理员账号")
@@ -66,9 +67,12 @@ if result is None:
 
 statistics = result.get("statistics", {})
 metrics = st.columns(3)
-metrics[0].metric("反馈总数", statistics.get("total", 0))
-metrics[1].metric("待处理", statistics.get("by_status", {}).get("pending", 0))
-metrics[2].metric("已处理", statistics.get("by_status", {}).get("resolved", 0))
+with metrics[0]:
+    render_metric_tile("反馈总数", statistics.get("total", 0), accent="violet", icon="forum")
+with metrics[1]:
+    render_metric_tile("待处理", statistics.get("by_status", {}).get("pending", 0), accent="amber", icon="pending_actions")
+with metrics[2]:
+    render_metric_tile("已处理", statistics.get("by_status", {}).get("resolved", 0), accent="green", icon="task_alt")
 
 chart_columns = st.columns(2)
 with chart_columns[0]:
@@ -86,7 +90,7 @@ status_labels = {
 }
 feedbacks = result.get("feedback", [])
 if not feedbacks:
-    st.info("当前筛选下没有反馈")
+    render_empty_state("当前筛选下没有反馈", "切换状态筛选可以查看其他反馈记录。", icon="feedback")
 
 for item in feedbacks:
     with st.expander(
@@ -109,7 +113,11 @@ for item in feedbacks:
                 format_func=lambda value: status_labels[value],
             )
             reply = st.text_area("回复内容", value=item.get("admin_reply") or "")
-            submitted = st.form_submit_button("保存处理结果", type="primary")
+            submitted = st.form_submit_button(
+                "保存处理结果",
+                type="primary",
+                icon=":material/save:",
+            )
         if submitted:
             with st.spinner("正在保存处理结果..."):
                 saved = api_request(

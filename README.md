@@ -25,7 +25,20 @@
 - 支持用户列表、搜索、详情以及项目列表和项目详情
 - 管理员密码与二级密码分别使用 bcrypt 哈希
 - 管理接口使用 Bearer token 验证
-- 初始管理员密码从环境变量读取，不硬编码在源码中
+- 初始管理员由 `backend/init_admin.py` 创建；当前脚本仍使用脚本内置的初始化参数，文档不展示具体密码。正式部署前应改为从部署平台的密钥环境变量读取，并重新初始化或重置初始管理员密码
+
+### 第二轮视觉与交互系统
+
+- 新增 `shared_ui` 共享设计系统，用户端和管理端复用主题、品牌与数据组件
+- 登录注册页使用全屏科研协作网络主视觉、深色遮罩和玻璃表单
+- 用户工作台采用浅色内容区、深色侧栏以及蓝、青、紫、绿多色信息层级
+- 管理端使用紫色身份强调，危险操作统一使用红色，成功操作使用绿色
+- 综合匹配度使用圆环展示，技能、时间、经验使用独立进度条，避免饼图造成占比误解
+- 首页指标卡、项目卡片、通知、空状态、状态徽章和页面标题已统一
+- 页面入场、卡片悬停、按钮反馈、分数圆环和进度条具备轻量动效
+- 支持减少动态效果的系统偏好，不依赖额外 JavaScript 动画库
+- 已适配桌面、平板和手机：平板指标两列，手机表单和操作区单列
+- 动态 HTML 数据统一转义，避免用户名、项目名等内容造成 HTML 注入
 
 ### 我的画像
 
@@ -149,11 +162,19 @@ total_score = skill_match × 0.6
 │   ├── database.py      # 数据库连接、会话和初始化
 │   ├── models.py        # SQLAlchemy 数据模型
 │   ├── app.db           # SQLite 数据库
-│   ├── init_admin.py    # 从环境变量创建初始管理员
+│   ├── init_admin.py    # 初始化管理员（当前脚本参数需后续安全加固）
 │   └── requirements.txt
 ├── frontend/
-│   └── app.py           # Streamlit 用户端
+│   ├── app.py           # Streamlit 用户端
+│   └── requirements.txt
 ├── frontend_admin/      # Streamlit 管理员端
+│   ├── admin_app.py
+│   ├── ui.py            # 管理端共享界面入口
+│   └── requirements.txt
+├── shared_ui/
+│   ├── theme.py         # 用户端、认证页和管理端主题
+│   ├── components.py    # 品牌、指标、状态、分数与空状态组件
+│   └── assets/          # 桌面和移动端科研协作主视觉
 ├── data/
 │   └── zhilink.db       # 旧数据库迁移备份
 └── README.md
@@ -193,14 +214,15 @@ $env:LLM_MODEL = "qwen-plus"
 
 不要将真实 API Key 写入代码或提交到 Git。
 
-创建初始管理员：
+创建初始管理员（当前脚本）：
 
 ```powershell
-$env:INITIAL_ADMIN_PASSWORD = "至少8位的管理员密码"
-$env:INITIAL_ADMIN_USER_PASSWORD = "至少8位的二级密码"
 cd C:\Users\zhang\Desktop\知遇LinkLab\backend
 python init_admin.py
 ```
+
+注意：当前 `init_admin.py` 尚未读取 `INITIAL_ADMIN_PASSWORD` 和
+`INITIAL_ADMIN_USER_PASSWORD`。这两个环境变量目前不会改变初始化密码；公网正式使用前必须先完成该安全加固，不能直接把脚本内置密码用于生产环境。
 
 ## 启动方式
 
@@ -391,6 +413,7 @@ streamlit run admin_app.py --server.address 0.0.0.0 --server.port 8502
 9. 收藏项目，确认“我的收藏”可以查看详情和取消收藏。
 10. 提交意见反馈，在管理端回复并确认用户收到通知。
 11. 在管理端下架项目，确认项目从发现和推荐中消失，再恢复项目。
+12. 分别以 `1440×900`、`1024×768` 和 `390×844` 检查登录页、首页、匹配推荐和管理控制台，确认没有文字重叠或横向滚动。
 
 ## 当前边界与下一步
 

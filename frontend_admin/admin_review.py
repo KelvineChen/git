@@ -1,6 +1,7 @@
 import streamlit as st
 
 from api_client import api_request
+from ui import render_empty_state, render_page_intro
 
 
 def _extract_admins(result: object) -> list[dict]:
@@ -54,7 +55,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("管理员审核")
+render_page_intro("管理员审核", "处理待审核管理员申请，控制平台运营权限。", eyebrow="权限治理")
 
 admin_token = st.session_state.get("admin_token")
 if not admin_token:
@@ -74,7 +75,7 @@ if pending_admins is None:
     st.stop()
 
 if not pending_admins:
-    st.info("暂无待审核管理员")
+    render_empty_state("暂无待审核管理员", "新的管理员申请会出现在这里。", icon="verified_user")
 else:
     for index, admin in enumerate(pending_admins):
         admin_name = str(admin.get("admin_name", "未提供"))
@@ -93,8 +94,9 @@ else:
             with action_col:
                 if st.button(
                     "通过",
-                    key=f"approve_{index}_{admin_name}",
+                    key=f"success_approve_{index}_{admin_name}",
                     use_container_width=True,
+                    icon=":material/check_circle:",
                 ):
                     with st.spinner("正在提交审核结果..."):
                         reviewed = _review_admin(admin_token, admin_name, "approve")
@@ -103,8 +105,9 @@ else:
 
                 if st.button(
                     "拒绝",
-                    key=f"reject_{index}_{admin_name}",
+                    key=f"danger_reject_{index}_{admin_name}",
                     use_container_width=True,
+                    icon=":material/cancel:",
                 ):
                     with st.spinner("正在提交审核结果..."):
                         reviewed = _review_admin(admin_token, admin_name, "reject")
@@ -112,4 +115,4 @@ else:
                         st.rerun()
 
 st.divider()
-st.page_link("admin_dashboard.py", label="返回管理员首页")
+st.page_link("admin_dashboard.py", label="返回管理员首页", icon=":material/arrow_back:")

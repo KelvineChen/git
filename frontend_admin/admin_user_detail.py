@@ -1,6 +1,7 @@
 import streamlit as st
 
 from api_client import api_request
+from ui import render_page_intro
 KNOWN_FIELDS = (
     ("username", "用户名"),
     ("email", "邮箱"),
@@ -54,7 +55,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("用户详情")
+render_page_intro("用户详情", "查看用户基础资料与平台记录。", eyebrow="用户管理")
 
 admin_token = st.session_state.get("admin_token")
 if not admin_token:
@@ -64,7 +65,7 @@ if not admin_token:
 username = _query_username()
 if not username:
     st.error("缺少 username URL 参数")
-    if st.button("返回用户管理页面"):
+    if st.button("返回用户管理页面", icon=":material/arrow_back:"):
         st.switch_page("admin_users.py")
     st.stop()
 
@@ -86,5 +87,5 @@ if user_data is not None:
         st.write(f"{field}：", value)
 
 st.divider()
-if st.button("返回用户管理页面"):
+if st.button("返回用户管理页面", icon=":material/arrow_back:"):
     st.switch_page("admin_users.py")

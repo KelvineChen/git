@@ -1,6 +1,7 @@
 import streamlit as st
 
 from api_client import api_request
+from ui import render_empty_state, render_page_intro
 
 
 def _extract_competitions(result: object) -> list[dict]:
@@ -48,7 +49,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("竞赛招募管理")
+render_page_intro("项目招募管理", "搜索平台项目，检查内容并执行下架或恢复操作。", eyebrow="内容治理")
 
 admin_token = st.session_state.get("admin_token")
 if not admin_token:
@@ -59,11 +60,11 @@ if not admin_token:
 st.subheader("搜索竞赛")
 col1, col2 = st.columns(2)
 with col1:
-    title = st.text_input("title")
+    title = st.text_input("项目名称")
 with col2:
-    creator = st.text_input("creator")
+    creator = st.text_input("发布者")
 
-search_submitted = st.button("搜索", type="primary")
+search_submitted = st.button("搜索", type="primary", icon=":material/search:")
 
 with st.spinner("正在加载竞赛列表..."):
     if search_submitted:
@@ -89,7 +90,7 @@ status_labels = {
 moderation_labels = {"active": "正常展示", "removed": "平台已下架"}
 
 if not competitions:
-    st.info("当前没有项目")
+    render_empty_state("当前没有项目", "平台暂时没有符合条件的项目记录。", icon="science")
 
 for project in competitions:
     project_id = project.get("id")
@@ -122,6 +123,7 @@ for project in competitions:
                 "恢复项目展示",
                 key=f"restore_project_{project_id}",
                 type="primary",
+                icon=":material/restore:",
             ):
                 with st.spinner("正在恢复项目..."):
                     saved = api_request(
@@ -141,7 +143,8 @@ for project in competitions:
             )
             if st.button(
                 "下架项目",
-                key=f"remove_project_{project_id}",
+                key=f"danger_remove_project_{project_id}",
+                icon=":material/block:",
             ):
                 if not reason.strip():
                     st.error("请先填写下架原因")
@@ -157,4 +160,4 @@ for project in competitions:
                     if saved is not None:
                         st.rerun()
 
-st.page_link("admin_dashboard.py", label="返回管理员首页")
+st.page_link("admin_dashboard.py", label="返回管理员首页", icon=":material/arrow_back:")

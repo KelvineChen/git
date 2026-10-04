@@ -1,11 +1,22 @@
 import streamlit as st
 
+from ui import inject_theme, render_brand_lockup
+
 
 st.set_page_config(
     page_title="知遇LinkLab 管理员系统",
     page_icon="🛠️",
     layout="wide",
 )
+
+inject_theme("admin" if st.session_state.get("admin_token") else "auth")
+
+with st.sidebar:
+    render_brand_lockup(
+        compact=True,
+        inverse=True,
+        subtitle="平台运营与内容治理",
+    )
 
 
 if st.session_state.get("admin_token"):
@@ -67,4 +78,16 @@ else:
     ]
 
 pg = st.navigation(pages)
+
+if st.session_state.get("admin_token"):
+    with st.sidebar:
+        st.caption(f"当前管理员：{st.session_state.get('admin_name', '未知')}")
+        if st.button(
+            "退出管理端",
+            key="logout_button",
+            icon=":material/logout:",
+            use_container_width=True,
+        ):
+            st.session_state.clear()
+            st.rerun()
 pg.run()

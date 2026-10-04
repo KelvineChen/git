@@ -1,6 +1,7 @@
 import streamlit as st
 
 from api_client import api_request
+from ui import render_empty_state, render_page_intro
 
 
 def _extract_users(result: object) -> list[dict]:
@@ -44,7 +45,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("用户管理")
+render_page_intro("用户管理", "检索平台用户并查看学校、专业和账号信息。", eyebrow="平台运营")
 
 admin_token = st.session_state.get("admin_token")
 if not admin_token:
@@ -55,13 +56,13 @@ if not admin_token:
 st.subheader("搜索用户")
 col1, col2, col3 = st.columns(3)
 with col1:
-    username = st.text_input("username")
+    username = st.text_input("用户名")
 with col2:
-    school = st.text_input("school")
+    school = st.text_input("学校")
 with col3:
-    major = st.text_input("major")
+    major = st.text_input("专业")
 
-search_submitted = st.button("搜索", type="primary")
+search_submitted = st.button("搜索", type="primary", icon=":material/search:")
 
 with st.spinner("正在加载用户列表..."):
     if search_submitted:
@@ -82,15 +83,14 @@ if users is None:
 
 st.divider()
 st.subheader("用户列表")
-st.dataframe(
-    users,
-    column_config={
-        "username": "username",
-        "school": "school",
-        "major": "major",
-    },
-    use_container_width=True,
-    hide_index=True,
-)
+if users:
+    st.dataframe(
+        users,
+        column_config={"username": "用户名", "school": "学校", "major": "专业"},
+        use_container_width=True,
+        hide_index=True,
+    )
+else:
+    render_empty_state("没有符合条件的用户", "请调整搜索条件后重试。", icon="person_search")
 
-st.page_link("admin_dashboard.py", label="返回管理员首页")
+st.page_link("admin_dashboard.py", label="返回管理员首页", icon=":material/arrow_back:")

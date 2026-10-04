@@ -1,236 +1,33 @@
 import json
 import os
 import re
+import sys
 from html import escape
+from pathlib import Path
 from urllib.parse import urlencode
 
 import requests
 import streamlit as st
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from shared_ui import (  # noqa: E402
+    inject_theme,
+    render_brand_lockup,
+    render_dimension_bars,
+    render_empty_state,
+    render_metric_tile,
+    render_page_intro,
+    render_score_ring,
+    render_skeleton,
+    render_status_badge,
+)
+
+
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
-
-
-def inject_styles() -> None:
-    st.markdown(
-        """
-        <style>
-        :root {
-            color-scheme: light;
-            --ink: #16233b;
-            --muted: #667085;
-            --line: #e5eaf2;
-            --blue: #2764e7;
-            --blue-soft: #eef4ff;
-            --teal: #0b8f83;
-            --surface: #ffffff;
-            --canvas: #f5f7fb;
-        }
-
-        .stApp { background: var(--canvas); color: var(--ink); }
-        [data-testid="stHeader"] { background: transparent; }
-        [data-testid="stAppViewContainer"] p,
-        [data-testid="stAppViewContainer"] label,
-        [data-testid="stAppViewContainer"] span,
-        [data-testid="stWidgetLabel"] p {
-            color: var(--ink);
-        }
-        [data-testid="stSidebar"] {
-            background: #101a2e;
-            border-right: 0;
-        }
-        [data-testid="stSidebar"] p,
-        [data-testid="stSidebar"] span,
-        [data-testid="stSidebar"] label,
-        [data-testid="stSidebar"] h1,
-        [data-testid="stSidebar"] h2,
-        [data-testid="stSidebar"] h3 { color: #e8eefb !important; }
-        [data-testid="stSidebar"] .stRadio label { color: #cbd5e8; }
-        [data-testid="stSidebar"] .stRadio label:hover { color: #ffffff; }
-        [data-testid="stSidebar"] button {
-            color: #e8eefb !important;
-            background: #17243d !important;
-            border-color: #34435f !important;
-        }
-        .block-container { max-width: 1180px; padding-top: 2.5rem; padding-bottom: 4rem; }
-        h1, h2, h3 { color: var(--ink); letter-spacing: 0; }
-        h1 { font-size: 2.25rem !important; line-height: 1.15 !important; }
-        h2 { font-size: 1.45rem !important; }
-        h3 { font-size: 1.1rem !important; }
-        [data-testid="stMetric"] {
-            background: var(--surface);
-            border: 1px solid var(--line);
-            border-radius: 12px;
-            padding: 1rem 1.1rem;
-            box-shadow: 0 4px 16px rgba(22, 35, 59, 0.04);
-        }
-        [data-testid="stMetricLabel"] { color: var(--muted); }
-        [data-testid="stMetricValue"] { color: var(--ink); }
-        div[data-testid="stButton"] > button {
-            border-radius: 9px;
-            min-height: 2.55rem;
-            font-weight: 600;
-            color: var(--ink) !important;
-            background: #ffffff !important;
-            border-color: #cbd5e1 !important;
-        }
-        div[data-testid="stButton"] > button:hover {
-            color: var(--blue) !important;
-            border-color: var(--blue) !important;
-        }
-        div[data-testid="stButton"] > button[kind="primary"],
-        div[data-testid="stFormSubmitButton"] > button {
-            color: #ffffff !important;
-            background: var(--blue) !important;
-            border-color: var(--blue) !important;
-        }
-        div[data-testid="stButton"] > button[kind="primary"] p,
-        div[data-testid="stFormSubmitButton"] > button p {
-            color: #ffffff !important;
-        }
-        div[data-testid="stButton"] > button:disabled {
-            color: #7a8699 !important;
-            background: #e8edf5 !important;
-            border-color: #d8dfeb !important;
-        }
-        [data-testid="stTextInput"] input,
-        [data-testid="stTextArea"] textarea,
-        [data-baseweb="select"] > div {
-            color: var(--ink) !important;
-            -webkit-text-fill-color: var(--ink) !important;
-            background: #ffffff !important;
-            border-color: #cbd5e1 !important;
-        }
-        [data-testid="stTextInput"] [data-baseweb="input"],
-        [data-testid="stTextInput"] [data-baseweb="base-input"],
-        [data-testid="stTextArea"] [data-baseweb="textarea"] {
-            color: var(--ink) !important;
-            background: #ffffff !important;
-        }
-        [data-testid="stTextInputRootElement"],
-        [data-testid="stTextAreaRootElement"] {
-            color: var(--ink) !important;
-            background: #ffffff !important;
-            border: 1px solid #cbd5e1 !important;
-            border-radius: 8px !important;
-            box-shadow: none !important;
-        }
-        [data-testid="stTextInputRootElement"]:focus-within,
-        [data-testid="stTextAreaRootElement"]:focus-within {
-            border-color: var(--blue) !important;
-            box-shadow: 0 0 0 1px var(--blue) !important;
-        }
-        [data-testid="stTextInput"] svg,
-        [data-testid="stTextArea"] svg {
-            fill: var(--muted) !important;
-            color: var(--muted) !important;
-        }
-        [data-testid="stTextInput"] input::placeholder,
-        [data-testid="stTextArea"] textarea::placeholder {
-            color: #98a2b3 !important;
-            -webkit-text-fill-color: #98a2b3 !important;
-        }
-        [data-baseweb="tab-list"] {
-            border-bottom-color: var(--line) !important;
-        }
-        [data-baseweb="tab"] p {
-            color: var(--muted) !important;
-        }
-        [aria-selected="true"][data-baseweb="tab"] p {
-            color: var(--blue) !important;
-        }
-        div[data-testid="stForm"] {
-            background: var(--surface);
-            border: 1px solid var(--line);
-            border-radius: 14px;
-            padding: 1.2rem;
-        }
-        [data-testid="stExpander"] {
-            background: var(--surface);
-            border: 1px solid var(--line);
-            border-radius: 12px;
-        }
-        .zl-eyebrow {
-            color: var(--blue);
-            font-size: .78rem;
-            font-weight: 700;
-            letter-spacing: .08em;
-            text-transform: uppercase;
-            margin-bottom: .6rem;
-        }
-        .zl-hero {
-            background: linear-gradient(135deg, #16233b 0%, #213d69 100%);
-            border-radius: 18px;
-            padding: 2rem 2.2rem;
-            margin-bottom: 1.4rem;
-            color: #ffffff;
-            box-shadow: 0 12px 30px rgba(22, 35, 59, .16);
-        }
-        .zl-hero h1 {
-            color: #ffffff !important;
-            -webkit-text-fill-color: #ffffff !important;
-        }
-        .zl-hero p { margin: .45rem 0 0; color: #d7e1f2 !important; font-size: 1rem; }
-        .zl-section { margin: 1.7rem 0 .75rem; }
-        .zl-section-title { color: var(--ink); font-size: 1.15rem; font-weight: 700; }
-        .zl-section-caption { color: var(--muted); font-size: .9rem; margin-top: .2rem; }
-        .zl-pill {
-            display: inline-block;
-            background: var(--blue-soft);
-            color: var(--blue);
-            border-radius: 999px;
-            padding: .22rem .62rem;
-            margin: .15rem .2rem .15rem 0;
-            font-size: .82rem;
-            font-weight: 600;
-        }
-        .zl-status {
-            display: inline-block;
-            border-radius: 999px;
-            padding: .22rem .62rem;
-            font-size: .8rem;
-            font-weight: 700;
-        }
-        .zl-status-open { background: #e8f7f2; color: #08796f; }
-        .zl-status-muted { background: #eef1f6; color: #596579; }
-        .zl-detail-band {
-            background: #eef4ff;
-            border-left: 4px solid var(--blue);
-            border-radius: 8px;
-            padding: .9rem 1rem;
-            margin: .6rem 0 1.2rem;
-        }
-        .zl-empty {
-            background: var(--surface);
-            border: 1px dashed #b9c6da;
-            border-radius: 14px;
-            padding: 1.5rem;
-            color: var(--muted);
-            text-align: center;
-        }
-        .zl-notification {
-            background: var(--surface);
-            border: 1px solid var(--line);
-            border-left: 4px solid #cbd5e1;
-            border-radius: 10px;
-            padding: 1rem 1.1rem;
-            margin: .7rem 0 .45rem;
-        }
-        .zl-notification-unread {
-            border-left-color: var(--blue);
-            background: #f8fbff;
-        }
-        .zl-notification-title {
-            color: var(--ink);
-            font-weight: 700;
-            margin-bottom: .3rem;
-        }
-        .zl-notification-content { color: #46546a; margin-bottom: .45rem; }
-        .zl-notification-time { color: var(--muted); font-size: .82rem; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
 
 
 def post_api(
@@ -335,6 +132,7 @@ def show_queued_success() -> None:
     message = st.session_state.pop("success_message", None)
     if message:
         st.success(message)
+        st.toast(message, icon=":material/check_circle:")
 
 
 def list_to_text(values: list | None) -> str:
@@ -397,9 +195,7 @@ def open_project_detail(project_id: int, return_page: str) -> None:
 
 
 def render_page_heading(title: str, description: str) -> None:
-    st.markdown(f"<div class='zl-eyebrow'>知遇 LinkLab</div>", unsafe_allow_html=True)
-    st.title(title)
-    st.caption(description)
+    render_page_intro(title, description)
 
 
 def profile_completeness(profile: dict | None) -> int:
@@ -446,17 +242,7 @@ def render_skill_pills(skills: list | None) -> None:
 
 
 def render_project_status(status: str) -> None:
-    labels = {
-        "recruiting": "招募中",
-        "full": "已满员",
-        "closed": "已关闭",
-        "completed": "已完成",
-    }
-    css_class = "zl-status-open" if status == "recruiting" else "zl-status-muted"
-    st.markdown(
-        f"<span class='zl-status {css_class}'>{labels.get(status, status or '未知')}</span>",
-        unsafe_allow_html=True,
-    )
+    render_status_badge(status)
 
 
 def render_match_breakdown(match: dict, key: str) -> None:
@@ -470,10 +256,19 @@ def render_match_breakdown(match: dict, key: str) -> None:
         {
             "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
             "data": {"values": values},
-            "mark": {"type": "bar", "cornerRadiusEnd": 5, "color": "#2764e7"},
+            "mark": {"type": "bar", "cornerRadiusEnd": 5},
             "encoding": {
                 "y": {"field": "维度", "type": "nominal", "sort": ["技能", "时间", "经验"], "title": None},
                 "x": {"field": "得分", "type": "quantitative", "scale": {"domain": [0, 100]}, "title": "得分（%）"},
+                "color": {
+                    "field": "维度",
+                    "type": "nominal",
+                    "scale": {
+                        "domain": ["技能", "时间", "经验"],
+                        "range": ["#2563EB", "#0891B2", "#7C3AED"],
+                    },
+                    "legend": None,
+                },
                 "tooltip": [
                     {"field": "维度", "type": "nominal"},
                     {"field": "得分", "type": "quantitative", "format": ".1f"},
@@ -524,7 +319,7 @@ def render_candidate_card(candidate: dict, project_id: int) -> None:
     user_id = candidate.get("user_id")
     owner_status = candidate.get("owner_status", "pending")
     mutual = bool(candidate.get("mutual"))
-    with st.container(border=True):
+    with st.container(border=True, key=f"candidate_card_{project_id}_{user_id}"):
         heading, score_column = st.columns([4, 1])
         with heading:
             st.subheader(candidate.get("username") or "未命名用户")
@@ -534,19 +329,15 @@ def render_candidate_card(candidate: dict, project_id: int) -> None:
                 f"{candidate.get('grade') or '年级未填写'}"
             )
         with score_column:
-            st.metric("匹配度", f"{float(candidate.get('total_score', 0)):.0%}")
+            render_score_ring(candidate.get("total_score", 0), size="small")
 
-        skill_column, time_column, experience_column = st.columns(3)
-        dimensions = (
-            (skill_column, "技能匹配", candidate.get("skill_match", 0)),
-            (time_column, "时间匹配", candidate.get("time_match", 0)),
-            (experience_column, "经验匹配", candidate.get("experience_match", 0)),
+        render_dimension_bars(
+            (
+                ("技能匹配", candidate.get("skill_match", 0), "blue"),
+                ("时间匹配", candidate.get("time_match", 0), "cyan"),
+                ("经验匹配", candidate.get("experience_match", 0), "violet"),
+            )
         )
-        for column, label, score in dimensions:
-            with column:
-                value = max(0.0, min(float(score), 1.0))
-                st.caption(f"{label} {value:.0%}")
-                st.progress(value)
 
         profile_left, profile_right = st.columns(2)
         with profile_left:
@@ -573,17 +364,23 @@ def render_candidate_card(candidate: dict, project_id: int) -> None:
         with accept_column:
             accept_clicked = st.button(
                 "已感兴趣" if owner_status == "interested" else "感兴趣",
-                key=f"owner_accept_{project_id}_{user_id}",
+                key=(
+                    f"interested_owner_accept_{project_id}_{user_id}"
+                    if owner_status == "interested"
+                    else f"owner_accept_{project_id}_{user_id}"
+                ),
                 type="primary",
                 disabled=owner_status == "interested",
                 use_container_width=True,
+                icon=":material/favorite:",
             )
         with decline_column:
             decline_clicked = st.button(
                 "已暂不考虑" if owner_status == "rejected" else "暂不考虑",
-                key=f"owner_decline_{project_id}_{user_id}",
+                key=f"danger_owner_decline_{project_id}_{user_id}",
                 disabled=owner_status == "rejected",
                 use_container_width=True,
+                icon=":material/block:",
             )
         action = "interested" if accept_clicked else ("rejected" if decline_clicked else None)
         if action:
@@ -613,7 +410,7 @@ def render_my_match_card(match: dict) -> None:
     status_text, status_kind = status_labels.get(
         relationship_status, ("状态待确认", "info")
     )
-    with st.container(border=True):
+    with st.container(border=True, key=f"my_match_card_{project_id}"):
         heading, score_column = st.columns([4, 1])
         with heading:
             st.subheader(match.get("project_name") or "未命名项目")
@@ -622,19 +419,16 @@ def render_my_match_card(match: dict) -> None:
                 f"{match.get('owner_school') or '学校未填写'}"
             )
         with score_column:
-            st.metric("匹配度", f"{float(match.get('total_score', 0)):.0%}")
+            render_score_ring(match.get("total_score", 0), size="small")
 
         getattr(st, status_kind)(status_text)
-        dimension_columns = st.columns(3)
-        for column, label, key in zip(
-            dimension_columns,
-            ("技能匹配", "时间匹配", "经验匹配"),
-            ("skill_match", "time_match", "experience_match"),
-        ):
-            with column:
-                value = max(0.0, min(float(match.get(key, 0)), 1.0))
-                st.caption(f"{label} {value:.0%}")
-                st.progress(value)
+        render_dimension_bars(
+            (
+                ("技能匹配", match.get("skill_match", 0), "blue"),
+                ("时间匹配", match.get("time_match", 0), "cyan"),
+                ("经验匹配", match.get("experience_match", 0), "violet"),
+            )
+        )
         with st.expander("查看匹配分析", expanded=False):
             render_match_breakdown(match, f"my_match_chart_{project_id}")
             st.info(match.get("explanation") or "暂无匹配解释")
@@ -648,13 +442,18 @@ def render_my_match_card(match: dict) -> None:
             key=f"my_match_detail_{project_id}",
             on_click=open_project_detail,
             args=(project_id, "我的匹配"),
+            icon=":material/arrow_forward:",
         )
 
 
 def show_project_detail() -> None:
     project_id = st.session_state.get("selected_project_id")
     return_page = st.session_state.get("project_return_page", "发现项目")
-    if st.button("返回项目列表", key=f"back_project_{project_id}"):
+    if st.button(
+        "返回项目列表",
+        key=f"back_project_{project_id}",
+        icon=":material/arrow_back:",
+    ):
         st.session_state.pop("selected_project_id", None)
         st.session_state.pop("project_return_page", None)
         st.rerun()
@@ -733,6 +532,7 @@ def show_project_detail() -> None:
         key=f"detail_interest_{project_id}_{return_page}",
         type="primary",
         disabled=not can_apply,
+        icon=":material/favorite:",
     ):
         with st.spinner("正在保存感兴趣状态..."):
             result = post_api(
@@ -747,6 +547,7 @@ def show_project_detail() -> None:
         "已收藏" if favorited else "收藏项目",
         key=f"detail_favorite_{project_id}_{return_page}",
         disabled=favorited,
+        icon=":material/bookmark:",
     ):
         with st.spinner("正在保存收藏..."):
             result = post_api(
@@ -766,26 +567,25 @@ def render_match_card(match: dict, *, source: str) -> None:
     time_match = max(0.0, min(float(match.get("time_match", 0)), 1.0))
     experience_match = max(0.0, min(float(match.get("experience_match", 0)), 1.0))
 
-    with st.container(border=True):
+    score_accent = "green" if total_score >= 0.8 else "blue" if total_score >= 0.6 else "slate"
+    with st.container(border=True, key=f"match_card_{source}_{project_id}_score_{score_accent}"):
         title_column, score_column = st.columns([4, 1])
         with title_column:
             st.subheader(match.get("project_name", "未命名项目"))
             school = match.get("owner_school") or "学校未填写"
             scope = "同校优先" if match.get("scope") == "same_school" else "跨校开放"
             st.caption(f"{school} · {scope}")
+            render_project_status(match.get("project_status", "recruiting"))
         with score_column:
-            st.metric("综合匹配度", f"{total_score:.0%}")
+            render_score_ring(total_score, size="small")
 
-        skill_column, time_column, experience_column = st.columns(3)
-        dimensions = (
-            (skill_column, "技能匹配", skill_match),
-            (time_column, "时间匹配", time_match),
-            (experience_column, "经验匹配", experience_match),
+        render_dimension_bars(
+            (
+                ("技能匹配", skill_match, "blue"),
+                ("时间匹配", time_match, "cyan"),
+                ("经验匹配", experience_match, "violet"),
+            )
         )
-        for column, label, score in dimensions:
-            with column:
-                st.caption(f"{label} {score:.0%}")
-                st.progress(score)
 
         with st.expander("查看匹配分析", expanded=False):
             render_match_breakdown(match, f"{source}_match_chart_{project_id}")
@@ -794,10 +594,11 @@ def render_match_card(match: dict, *, source: str) -> None:
         with action_left:
             if st.button(
                 "已感兴趣" if is_interested else "感兴趣",
-                key=f"{source}_interest_{project_id}",
+                key=f"interested_{source}_{project_id}",
                 type="primary",
                 disabled=is_interested,
                 use_container_width=True,
+                icon=":material/favorite:",
             ):
                 if project_id is None:
                     st.error("项目信息不完整，请刷新后重试")
@@ -822,12 +623,14 @@ def render_match_card(match: dict, *, source: str) -> None:
                 on_click=open_project_detail,
                 args=(project_id, "首页" if source == "home" else "匹配推荐"),
                 use_container_width=True,
+                icon=":material/arrow_forward:",
             )
 
 
 def render_project_card(project: dict) -> None:
     project_id = project.get("project_id")
-    with st.container(border=True):
+    status_accent = {"recruiting": "green", "full": "amber", "removed": "red"}.get(project.get("status"), "slate")
+    with st.container(border=True, key=f"project_card_{project_id}_state_{status_accent}"):
         heading, score_column = st.columns([4, 1])
         with heading:
             st.subheader(project.get("name") or "未命名项目")
@@ -863,6 +666,7 @@ def render_project_card(project: dict) -> None:
                 on_click=open_project_detail,
                 args=(project_id, "发现项目"),
                 use_container_width=True,
+                icon=":material/arrow_forward:",
             )
         with interest_column:
             is_owner = project.get("owner_id") == st.session_state.get("user_id")
@@ -874,6 +678,7 @@ def render_project_card(project: dict) -> None:
                 type="primary",
                 disabled=is_interested or not can_apply,
                 use_container_width=True,
+                icon=":material/favorite:",
             ):
                 with st.spinner("正在保存感兴趣状态..."):
                     result = post_api(
@@ -893,6 +698,7 @@ def render_project_card(project: dict) -> None:
                 key=f"discover_favorite_{project_id}",
                 disabled=favorited,
                 use_container_width=True,
+                icon=":material/bookmark:",
             ):
                 with st.spinner("正在保存收藏..."):
                     result = post_api(
@@ -924,8 +730,8 @@ def show_home_page() -> None:
         f"""
         <section class="zl-hero">
             <div class="zl-eyebrow" style="color:#83c9ff">RESEARCH COLLABORATION</div>
-            <h1>你好，{username}</h1>
-            <p>{school} · 用能力画像连接合适的项目与科研搭档。</p>
+            <h1>你好，{escape(username)}<span class="zl-hero-status">已登录</span></h1>
+            <p>{escape(school)} · 用能力画像连接合适的项目与科研搭档。</p>
         </section>
         """,
         unsafe_allow_html=True,
@@ -942,14 +748,20 @@ def show_home_page() -> None:
 
     metric_columns = st.columns(4)
     metrics = (
-        ("画像完整度", f"{completeness}%"),
-        ("推荐项目", str(len(matches))),
-        ("我发布的项目", str(len(projects))),
-        ("已表达意向", str(interested_count)),
+        ("画像完整度", f"{completeness}%", "blue", "person_search", "资料越完整，推荐越准确"),
+        ("推荐项目", str(len(matches)), "cyan", "recommend", "根据当前画像生成"),
+        ("我发布的项目", str(len(projects)), "violet", "science", "由你发起的合作机会"),
+        ("已表达意向", str(interested_count), "green", "handshake", "等待进一步建立连接"),
     )
-    for column, (label, value) in zip(metric_columns, metrics):
+    for column, (label, value, accent, icon, caption) in zip(metric_columns, metrics):
         with column:
-            st.metric(label, value)
+            render_metric_tile(
+                label,
+                value,
+                accent=accent,
+                icon=icon,
+                caption=caption,
+            )
 
     st.markdown(
         "<div class='zl-section'><div class='zl-section-title'>快速开始</div>"
@@ -958,13 +770,17 @@ def show_home_page() -> None:
     )
     quick_columns = st.columns(3)
     quick_actions = (
-        (quick_columns[0], "完善能力画像", "让系统更准确地理解你的技能与经历", "我的画像"),
-        (quick_columns[1], "发现科研项目", "浏览同校与跨校开放的合作机会", "发现项目"),
-        (quick_columns[2], "发布招募需求", "把项目需求转换成清晰的结构化标签", "发布项目"),
+        (quick_columns[0], "完善能力画像", "让系统更准确地理解你的技能与经历", "我的画像", "badge"),
+        (quick_columns[1], "发现科研项目", "浏览同校与跨校开放的合作机会", "发现项目", "travel_explore"),
+        (quick_columns[2], "发布招募需求", "把项目需求转换成清晰的结构化标签", "发布项目", "add_circle"),
     )
-    for column, title, description, page in quick_actions:
+    for column, title, description, page, icon in quick_actions:
         with column:
-            with st.container(border=True):
+            with st.container(border=True, key=f"quick_{page}"):
+                st.markdown(
+                    f'<span class="zl-quick-icon material-symbols-rounded">{icon}</span>',
+                    unsafe_allow_html=True,
+                )
                 st.subheader(title)
                 st.caption(description)
                 st.button(
@@ -973,6 +789,7 @@ def show_home_page() -> None:
                     on_click=navigate_to,
                     args=(page,),
                     use_container_width=True,
+                    icon=":material/arrow_forward:",
                 )
 
     st.markdown(
@@ -984,12 +801,17 @@ def show_home_page() -> None:
         for match in matches[:2]:
             render_match_card(match, source="home")
     else:
-        st.markdown(
-            "<div class='zl-empty'>暂无推荐项目。完善画像后再来看看，或者先发布一个项目。</div>",
-            unsafe_allow_html=True,
+        render_empty_state(
+            "暂时没有推荐项目",
+            "完善画像后再来看看，或者先浏览当前开放的科研项目。",
+            icon="manage_search",
         )
 
-    if st.button("刷新概览", key="refresh_home"):
+    if st.button(
+        "刷新概览",
+        key="refresh_home",
+        icon=":material/refresh:",
+    ):
         load_home_overview(force=True)
         st.rerun()
 
@@ -1063,9 +885,10 @@ def show_discover_projects_page() -> None:
 
     st.caption(f"找到 {total} 个符合条件的项目 · 第 {page}/{total_pages} 页")
     if not projects:
-        st.markdown(
-            "<div class='zl-empty'>没有符合当前条件的项目，可以尝试清空关键词或切换范围。</div>",
-            unsafe_allow_html=True,
+        render_empty_state(
+            "没有符合当前条件的项目",
+            "可以尝试清空关键词、放宽筛选条件或切换开放范围。",
+            icon="filter_alt_off",
         )
         return
     for project in projects:
@@ -1089,98 +912,150 @@ def show_discover_projects_page() -> None:
 
 
 def show_auth_page() -> None:
-    st.title("知遇LinkLab - 找到你的科研搭档")
-    login_tab, register_tab = st.tabs(["登录", "注册"])
-
-    with login_tab:
-        with st.form("login_form"):
-            username = st.text_input("用户名", key="login_username")
-            password = st.text_input(
-                "密码",
-                type="password",
-                key="login_password",
+    brand_column, form_column = st.columns([1.18, 0.82], gap="large")
+    with brand_column:
+        with st.container(key="auth_copy"):
+            render_brand_lockup(inverse=True, subtitle="高校科研协作匹配平台")
+            st.markdown(
+                """
+                <div class="zl-auth-kicker">RESEARCH COLLABORATION NETWORK</div>
+                <h1>知遇 LinkLab</h1>
+                <p>找到你的科研搭档。让能力、项目与同行彼此找到，一起把研究想法变成成果。</p>
+                <div class="zl-auth-proof">
+                    <span>结构化能力画像</span>
+                    <span>可解释匹配</span>
+                    <span>同校优先 · 跨校开放</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
-            submitted = st.form_submit_button("登录", use_container_width=True)
 
-        if submitted:
-            if not username.strip() or not password:
-                st.warning("请输入用户名和密码")
-            else:
-                with st.spinner("正在登录..."):
-                    result = post_api(
-                        "/api/auth/login",
-                        {
-                            "username": username.strip(),
-                            "password": password,
-                        },
-                        error_messages={
-                            "user_not_found": "用户不存在",
-                            "invalid_password": "密码错误",
-                        },
-                    )
-                if result:
-                    token = result.get("token")
-                    if not token:
-                        st.error("登录成功但未获取到 token")
-                    else:
-                        set_current_user(
-                            result["user_id"],
-                            result["username"],
-                            result.get("school"),
-                            token,
+    with form_column:
+        with st.container(key="auth_panel"):
+            auth_mode = st.segmented_control(
+                "账户入口",
+                ["登录", "注册"],
+                default="登录",
+                selection_mode="single",
+                label_visibility="collapsed",
+                key="auth_mode",
+            )
+
+            if auth_mode == "注册":
+                st.markdown(
+                    '<div class="zl-auth-panel-head"><h2>创建账号</h2>'
+                    '<p>加入高校科研协作网络</p></div>',
+                    unsafe_allow_html=True,
+                )
+                with st.form("register_form"):
+                    identity_left, identity_right = st.columns(2)
+                    with identity_left:
+                        username = st.text_input("用户名", key="register_username")
+                    with identity_right:
+                        email = st.text_input("邮箱", key="register_email")
+                    password_left, password_right = st.columns(2)
+                    with password_left:
+                        password = st.text_input(
+                            "密码", type="password", key="register_password"
                         )
-                        queue_success("登录成功")
-                        st.rerun()
-
-    with register_tab:
-        with st.form("register_form"):
-            username = st.text_input("用户名", key="register_username")
-            email = st.text_input("邮箱", key="register_email")
-            password = st.text_input(
-                "密码",
-                type="password",
-                key="register_password",
-            )
-            confirm_password = st.text_input(
-                "确认密码",
-                type="password",
-                key="register_confirm_password",
-            )
-            school = st.text_input("学校", key="register_school")
-            major = st.text_input("专业", key="register_major")
-            grade = st.text_input("年级", key="register_grade")
-            submitted = st.form_submit_button("注册", use_container_width=True)
-
-        if submitted:
-            if (
-                not username.strip()
-                or not email.strip()
-                or not password
-                or not confirm_password
-            ):
-                st.warning("用户名、邮箱和密码不能为空")
-            elif password != confirm_password:
-                st.error("两次输入的密码不一致")
-            else:
-                with st.spinner("正在注册..."):
-                    result = post_api(
-                        "/api/auth/register",
-                        {
-                            "username": username.strip(),
-                            "email": email.strip(),
-                            "password": password,
-                            "confirm_password": confirm_password,
-                            "school": school.strip(),
-                            "major": major.strip(),
-                            "grade": grade.strip(),
-                        },
+                    with password_right:
+                        confirm_password = st.text_input(
+                            "确认密码",
+                            type="password",
+                            key="register_confirm_password",
+                        )
+                    school = st.text_input("学校", key="register_school")
+                    detail_left, detail_right = st.columns(2)
+                    with detail_left:
+                        major = st.text_input("专业", key="register_major")
+                    with detail_right:
+                        grade = st.text_input("年级", key="register_grade")
+                    submitted = st.form_submit_button(
+                        "创建账号",
+                        icon=":material/person_add:",
+                        type="primary",
+                        use_container_width=True,
                     )
-                if result:
-                    st.success("注册成功，请使用用户名和密码登录")
+
+                if submitted:
+                    if (
+                        not username.strip()
+                        or not email.strip()
+                        or not password
+                        or not confirm_password
+                    ):
+                        st.warning("用户名、邮箱和密码不能为空")
+                    elif password != confirm_password:
+                        st.error("两次输入的密码不一致")
+                    else:
+                        with st.spinner("正在创建账号..."):
+                            result = post_api(
+                                "/api/auth/register",
+                                {
+                                    "username": username.strip(),
+                                    "email": email.strip(),
+                                    "password": password,
+                                    "confirm_password": confirm_password,
+                                    "school": school.strip(),
+                                    "major": major.strip(),
+                                    "grade": grade.strip(),
+                                },
+                            )
+                        if result:
+                            st.success("注册成功，请切换到登录")
+            else:
+                st.markdown(
+                    '<div class="zl-auth-panel-head"><h2>欢迎回来</h2>'
+                    '<p>继续探索适合你的科研合作机会</p></div>',
+                    unsafe_allow_html=True,
+                )
+                with st.form("login_form"):
+                    username = st.text_input("用户名", key="login_username")
+                    password = st.text_input(
+                        "密码", type="password", key="login_password"
+                    )
+                    submitted = st.form_submit_button(
+                        "登录",
+                        icon=":material/login:",
+                        type="primary",
+                        use_container_width=True,
+                    )
+
+                if submitted:
+                    if not username.strip() or not password:
+                        st.warning("请输入用户名和密码")
+                    else:
+                        with st.spinner("正在验证账号..."):
+                            result = post_api(
+                                "/api/auth/login",
+                                {"username": username.strip(), "password": password},
+                                error_messages={
+                                    "user_not_found": "用户不存在",
+                                    "invalid_password": "密码错误",
+                                },
+                            )
+                        if result:
+                            token = result.get("token")
+                            if not token:
+                                st.error("登录成功但未获取到 token")
+                            else:
+                                set_current_user(
+                                    result["user_id"],
+                                    result["username"],
+                                    result.get("school"),
+                                    token,
+                                )
+                                queue_success("登录成功")
+                                st.rerun()
+
+            st.markdown(
+                '<div class="zl-auth-foot">登录即表示你同意遵守平台科研协作规范</div>',
+                unsafe_allow_html=True,
+            )
 
 
 def show_profile_page() -> None:
-    st.header("我的画像")
+    render_page_heading("我的画像", "让系统准确理解你的技能、经历、兴趣和协作节奏。")
     user_id = st.session_state["user_id"]
     loaded_key = f"profile_loaded_{user_id}"
 
@@ -1215,12 +1090,22 @@ def show_profile_page() -> None:
         key="profile_raw_text",
     )
 
-    if st.button("解析", key="parse_profile_button"):
+    if st.button(
+        "AI 解析",
+        key="parse_profile_button",
+        icon=":material/auto_awesome:",
+    ):
         if not raw_text.strip():
             st.warning("请先输入个人描述")
         else:
             with st.spinner("AI正在解析中..."):
-                result = post_api("/api/parse_profile", {"raw_text": raw_text})
+                loading_placeholder = st.empty()
+                with loading_placeholder.container():
+                    render_skeleton(rows=4)
+                try:
+                    result = post_api("/api/parse_profile", {"raw_text": raw_text})
+                finally:
+                    loading_placeholder.empty()
             if result:
                 parsed_data = result.get("data", {})
                 set_profile_draft(parsed_data, include_raw_text=False)
@@ -1243,7 +1128,12 @@ def show_profile_page() -> None:
             st.text_area("兴趣方向（一行一项）", key="profile_interests", height=130)
             st.text_input("时间投入", key="profile_time")
 
-        if st.button("保存画像", type="primary", use_container_width=True):
+        if st.button(
+            "保存画像",
+            type="primary",
+            icon=":material/save:",
+            use_container_width=True,
+        ):
             try:
                 skill_levels = json.loads(st.session_state["profile_skill_levels"])
                 if not isinstance(skill_levels, dict):
@@ -1325,7 +1215,7 @@ def show_profile_page() -> None:
 
 
 def show_publish_project_page() -> None:
-    st.header("发布项目")
+    render_page_heading("发布项目", "把自然语言需求整理成清晰、可检索的招募信息。")
     project_name = st.text_input("项目名称", key="new_project_name")
     raw_text = st.text_area(
         "需求描述",
@@ -1340,12 +1230,22 @@ def show_publish_project_page() -> None:
         key="new_project_scope",
     )
 
-    if st.button("解析", key="parse_project_button"):
+    if st.button(
+        "AI 解析",
+        key="parse_project_button",
+        icon=":material/auto_awesome:",
+    ):
         if not raw_text.strip():
             st.warning("请先输入项目需求")
         else:
             with st.spinner("AI正在解析中..."):
-                result = post_api("/api/parse_project", {"raw_text": raw_text})
+                loading_placeholder = st.empty()
+                with loading_placeholder.container():
+                    render_skeleton(rows=4)
+                try:
+                    result = post_api("/api/parse_project", {"raw_text": raw_text})
+                finally:
+                    loading_placeholder.empty()
             if result:
                 set_project_draft(result.get("data", {}))
                 queue_success("项目需求解析成功")
@@ -1366,7 +1266,12 @@ def show_publish_project_page() -> None:
             st.text_input("时间要求", key="project_time")
             st.text_area("项目背景", key="project_background", height=210)
 
-        if st.button("发布项目", type="primary", use_container_width=True):
+        if st.button(
+            "发布项目",
+            type="primary",
+            icon=":material/publish:",
+            use_container_width=True,
+        ):
             if not project_name.strip():
                 st.warning("请填写项目名称")
             else:
@@ -1406,7 +1311,10 @@ def show_match_recommendations_page() -> None:
         show_project_detail()
         return
 
-    st.header("为你推荐的匹配项目")
+    render_page_heading(
+        "为你推荐的匹配项目",
+        "根据技能、时间投入和经历相关性，展示当前最适合你的合作机会。",
+    )
     success_message = st.session_state.pop("interest_success_message", None)
     if success_message:
         st.success(success_message)
@@ -1430,7 +1338,11 @@ def show_match_recommendations_page() -> None:
 
     matches = result.get("matches", [])
     if not matches:
-        st.info("暂时没有适合的项目，请先完善画像或等待更多项目发布")
+        render_empty_state(
+            "暂时没有适合的项目",
+            "可以先完善画像，或稍后等待更多项目发布。",
+            icon="recommend",
+        )
         return
 
     st.success(f"匹配成功，共找到 {len(matches)} 个项目")
@@ -1453,9 +1365,10 @@ def show_my_matches_page() -> None:
         return
     matches = result.get("matches", [])
     if not matches:
-        st.markdown(
-            "<div class='zl-empty'>你还没有对项目表达意向，可以先去发现项目。</div>",
-            unsafe_allow_html=True,
+        render_empty_state(
+            "还没有匹配进度",
+            "先去发现项目，对合适的合作机会表达兴趣。",
+            icon="handshake",
         )
         return
 
@@ -1469,9 +1382,12 @@ def show_my_matches_page() -> None:
         ),
     }
     metric_columns = st.columns(3)
-    metric_columns[0].metric("双方已匹配", counts["mutual"])
-    metric_columns[1].metric("等待处理", counts["pending"])
-    metric_columns[2].metric("暂不考虑", counts["declined"])
+    with metric_columns[0]:
+        render_metric_tile("双方已匹配", counts["mutual"], accent="green", icon="handshake")
+    with metric_columns[1]:
+        render_metric_tile("等待处理", counts["pending"], accent="amber", icon="schedule")
+    with metric_columns[2]:
+        render_metric_tile("暂不考虑", counts["declined"], accent="slate", icon="pause_circle")
     for match in matches:
         render_my_match_card(match)
 
@@ -1518,7 +1434,7 @@ def show_notifications_page() -> None:
 
     if not notifications:
         message = "目前没有未读通知" if unread_only == "仅看未读" else "目前还没有通知"
-        st.markdown(f"<div class='zl-empty'>{message}</div>", unsafe_allow_html=True)
+        render_empty_state(message, "项目与匹配状态发生变化时会在这里提醒你。", icon="notifications")
         return
 
     for item in notifications:
@@ -1562,7 +1478,7 @@ def show_notifications_page() -> None:
 
 
 def show_my_projects_page() -> None:
-    st.header("我的项目")
+    render_page_heading("我的项目", "管理你发布的项目状态，并处理候选人的合作意向。")
     with st.spinner("正在读取项目列表..."):
         result = get_api(f"/api/my_projects/{st.session_state['user_id']}")
     if result is None or not result.get("success"):
@@ -1570,7 +1486,11 @@ def show_my_projects_page() -> None:
 
     projects = result.get("projects", [])
     if not projects:
-        st.info("你还没有发布项目")
+        render_empty_state(
+            "你还没有发布项目",
+            "整理好研究目标和所需能力后，可以创建第一条招募信息。",
+            icon="science",
+        )
         return
 
     st.success(f"共读取到 {len(projects)} 个项目")
@@ -1651,15 +1571,16 @@ def show_favorites_page() -> None:
         return
     favorites = result.get("favorites", [])
     if not favorites:
-        st.markdown(
-            "<div class='zl-empty'>还没有收藏项目，可以先去发现项目。</div>",
-            unsafe_allow_html=True,
+        render_empty_state(
+            "还没有收藏项目",
+            "在发现项目时收藏感兴趣的方向，方便稍后继续查看。",
+            icon="bookmark",
         )
         return
     st.success(f"已收藏 {len(favorites)} 个项目")
     for favorite in favorites:
         project_id = favorite.get("project_id")
-        with st.container(border=True):
+        with st.container(border=True, key=f"favorite_card_{project_id}"):
             left, right = st.columns([4, 1])
             with left:
                 st.subheader(favorite.get("name") or "未命名项目")
@@ -1679,11 +1600,13 @@ def show_favorites_page() -> None:
                     on_click=open_project_detail,
                     args=(project_id, "我的收藏"),
                     use_container_width=True,
+                    icon=":material/arrow_forward:",
                 )
                 if st.button(
                     "取消收藏",
-                    key=f"favorite_remove_{project_id}",
+                    key=f"danger_favorite_remove_{project_id}",
                     use_container_width=True,
+                    icon=":material/bookmark_remove:",
                 ):
                     with st.spinner("正在取消收藏..."):
                         removed = delete_api(
@@ -1706,7 +1629,11 @@ def show_feedback_page() -> None:
             height=150,
         )
         contact_email = st.text_input("联系邮箱（可选）")
-        submitted = st.form_submit_button("提交反馈", type="primary")
+        submitted = st.form_submit_button(
+            "提交反馈",
+            type="primary",
+            icon=":material/send:",
+        )
     if submitted:
         with st.spinner("正在提交反馈..."):
             result = post_api(
@@ -1761,13 +1688,23 @@ def show_authenticated_app() -> None:
         else 0
     )
     with st.sidebar:
-        st.markdown("### 知遇 **LinkLab**")
-        st.caption("科研协作匹配平台")
+        render_brand_lockup(compact=True, subtitle="科研协作匹配平台")
         st.divider()
-        st.subheader(st.session_state["username"])
+        username = st.session_state["username"]
         school = st.session_state.get("school")
-        if school:
-            st.caption(school)
+        initial = (username.strip()[:1] or "知").upper()
+        st.markdown(
+            f"""
+            <div class="zl-sidebar-user">
+                <div class="zl-avatar">{escape(initial)}</div>
+                <div>
+                    <div class="zl-sidebar-name">{escape(username)}</div>
+                    <div class="zl-sidebar-school">{escape(school or '高校科研社区')}</div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
         pages = [
             "首页",
@@ -1797,9 +1734,18 @@ def show_authenticated_app() -> None:
         )
 
         st.divider()
-        if st.button("退出登录", use_container_width=True):
+        if st.button(
+            "退出登录",
+            key="logout_button",
+            icon=":material/logout:",
+            use_container_width=True,
+        ):
             st.session_state.clear()
             st.rerun()
+        st.markdown(
+            '<div class="zl-sidebar-version">v2.0 · 2026</div>',
+            unsafe_allow_html=True,
+        )
 
     pages = {
         "首页": show_home_page,
@@ -1822,7 +1768,7 @@ def main() -> None:
         page_icon="🔗",
         layout="wide",
     )
-    inject_styles()
+    inject_theme("user" if st.session_state.get("user_id") else "auth")
 
     if st.session_state.get("user_id"):
         show_authenticated_app()
