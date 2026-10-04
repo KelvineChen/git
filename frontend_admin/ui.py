@@ -14,7 +14,7 @@ from shared_ui import (  # noqa: E402,F401
     render_empty_state,
     render_metric_tile,
     render_page_intro,
-    render_request_error,
     render_score_ring,
     render_status_badge,
 )
+from shared_ui.feedback import render_request_error  # noqa: E402,F401

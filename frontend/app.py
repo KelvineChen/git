@@ -21,11 +21,11 @@ from shared_ui import (  # noqa: E402
     render_empty_state,
     render_metric_tile,
     render_page_intro,
-    render_request_error,
     render_score_ring,
     render_skeleton,
     render_status_badge,
 )
+from shared_ui.feedback import render_request_error  # noqa: E402
 
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
