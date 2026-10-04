@@ -7,7 +7,7 @@ REGISTER_ERROR_MESSAGES = {
     "admin_name_exists": "管理员名称已存在",
     "invalid_admin_name": "管理员名称不合法",
     "password_mismatch": "两次输入的管理员密码不一致",
-    "password_too_short": "两类密码都至少需要8位",
+    "password_too_short": "管理员密码和用户操作密码均须至少8位",
 }
 
 
@@ -25,7 +25,7 @@ with copy_column:
             """
             <div class="zl-auth-kicker">ADMIN ACCESS</div>
             <h1>申请平台管理权限</h1>
-            <p>管理员账号提交后需要审核，通过后才能进入运营与治理页面。</p>
+            <p>注册申请经审核通过后，方可使用管理功能。</p>
             """,
             unsafe_allow_html=True,
         )
@@ -34,7 +34,7 @@ with form_column:
     with st.container(key="auth_panel"):
         st.markdown(
             '<div class="zl-auth-panel-head"><h2>管理员注册</h2>'
-            '<p>请设置独立的管理员凭据</p></div>',
+            '<p>请设置管理员账号与操作密码</p></div>',
             unsafe_allow_html=True,
         )
         with st.form("admin_register_form"):
@@ -47,7 +47,7 @@ with form_column:
             user_password = st.text_input(
                 "用户操作密码",
                 type="password",
-                help="管理员操作用户数据时使用的用户密码",
+                help="用于管理员操作用户数据时的身份验证，并非普通用户的登录密码",
             )
             submitted = st.form_submit_button(
                 "提交注册申请",
@@ -79,6 +79,6 @@ if submitted:
                     "confirm_admin_password": confirm_admin_password,
                     "user_password": user_password,
                 },
-                success_message="注册成功，等待管理员审核",
+                success_message="注册申请已提交，请等待审核",
                 error_messages=REGISTER_ERROR_MESSAGES,
             )

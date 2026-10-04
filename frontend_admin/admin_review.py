@@ -55,7 +55,7 @@ st.set_page_config(
     layout="wide",
 )
 
-render_page_intro("管理员审核", "处理待审核管理员申请，控制平台运营权限。", eyebrow="权限治理")
+render_page_intro("管理员审核", "审核管理员注册申请，管理平台操作权限。", eyebrow="权限治理")
 
 admin_token = st.session_state.get("admin_token")
 if not admin_token:
@@ -67,7 +67,7 @@ if st.session_state.get("admin_status") != "approved":
     st.error("当前管理员未审核通过，禁止访问此页面")
     st.stop()
 
-st.caption("仅显示 admin_status = pending 的管理员")
+st.caption("仅展示待审核的管理员申请")
 
 with st.spinner("正在加载审核列表..."):
     pending_admins = _load_pending_admins(admin_token)
@@ -86,10 +86,10 @@ else:
         with st.container(border=True):
             info_col, action_col = st.columns([4, 2])
             with info_col:
-                st.write(f"**admin_name：**{admin_name}")
-                st.write(f"**username：**{username}")
-                st.write(f"**created_at：**{created_at}")
-                st.write(f"**状态：**{status}")
+                st.write(f"**管理员名称：**{admin_name}")
+                st.write(f"**关联用户：**{username}")
+                st.write(f"**申请时间：**{created_at}")
+                st.write(f"**状态：**{'待审核' if status == 'pending' else status}")
 
             with action_col:
                 if st.button(

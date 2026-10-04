@@ -35,7 +35,7 @@ def _load_competitions(
         path,
         token=token,
         params=params if search else None,
-        success_message="竞赛列表加载成功",
+        success_message="项目列表加载成功",
     )
     if result is None:
         return None
@@ -44,7 +44,7 @@ def _load_competitions(
 
 
 st.set_page_config(
-    page_title="竞赛招募管理 - 知遇LinkLab",
+    page_title="项目招募管理 - 知遇LinkLab",
     page_icon="🏆",
     layout="wide",
 )
@@ -57,7 +57,7 @@ if not admin_token:
     st.page_link("admin_login.py", label="前往管理员登录")
     st.stop()
 
-st.subheader("搜索竞赛")
+st.subheader("搜索项目")
 col1, col2 = st.columns(2)
 with col1:
     title = st.text_input("项目名称")
@@ -65,13 +65,16 @@ with col2:
     creator = st.text_input("发布者")
 
 search_submitted = st.button("搜索", type="primary", icon=":material/search:")
+if search_submitted:
+    st.session_state["admin_project_search"] = {"title": title.strip(), "creator": creator.strip()}
+search_params = st.session_state.get("admin_project_search")
 
-with st.spinner("正在加载竞赛列表..."):
-    if search_submitted:
+with st.spinner("正在加载项目列表..."):
+    if search_params is not None:
         competitions = _load_competitions(
             admin_token,
             search=True,
-            params={"title": title.strip(), "creator": creator.strip()},
+            params=search_params,
         )
     else:
         competitions = _load_competitions(admin_token)

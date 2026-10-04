@@ -12,7 +12,7 @@ st.set_page_config(
     layout="wide",
 )
 
-render_page_intro("管理员控制台", "查看平台核心运营指标，并进入用户、项目与反馈治理流程。", eyebrow="平台运营")
+render_page_intro("管理员控制台", "查看运营指标，管理用户、项目与反馈。", eyebrow="平台运营")
 
 admin_token = st.session_state.get("admin_token")
 if not admin_token:
@@ -23,7 +23,7 @@ admin_name = st.session_state.get("admin_name", "未知管理员")
 admin_status = st.session_state.get("admin_status", "unknown")
 
 st.markdown(
-    f'<div class="zl-admin-banner"><strong>欢迎你，管理员 {escape(str(admin_name))}</strong><br>'
+    f'<div class="zl-admin-banner"><strong>欢迎，{escape(str(admin_name))}</strong><br>'
     f'<span style="color:#64748B">当前状态：{escape(str(admin_status))}</span></div>',
     unsafe_allow_html=True,
 )
@@ -94,7 +94,7 @@ with col1:
     if st.button("用户管理", icon=":material/group:", use_container_width=True):
         st.switch_page("admin_users.py")
 with col2:
-    if st.button("竞赛招募管理", icon=":material/science:", use_container_width=True):
+    if st.button("项目招募管理", icon=":material/science:", use_container_width=True):
         st.switch_page("admin_competitions.py")
 with col3:
     if st.button("管理员审核", icon=":material/rate_review:", use_container_width=True):

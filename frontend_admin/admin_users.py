@@ -63,17 +63,18 @@ with col3:
     major = st.text_input("专业")
 
 search_submitted = st.button("搜索", type="primary", icon=":material/search:")
+if search_submitted:
+    st.session_state["admin_user_search"] = {
+        "username": username.strip(), "school": school.strip(), "major": major.strip(),
+    }
+search_params = st.session_state.get("admin_user_search")
 
 with st.spinner("正在加载用户列表..."):
-    if search_submitted:
+    if search_params is not None:
         users = _load_users(
             admin_token,
             search=True,
-            params={
-                "username": username.strip(),
-                "school": school.strip(),
-                "major": major.strip(),
-            },
+            params=search_params,
         )
     else:
         users = _load_users(admin_token)

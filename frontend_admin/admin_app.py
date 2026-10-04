@@ -48,7 +48,7 @@ if st.session_state.get("admin_token"):
         ),
         st.Page(
             "admin_competitions.py",
-            title="竞赛招募管理",
+            title="项目招募管理",
             icon=":material/emoji_events:",
         ),
         st.Page(

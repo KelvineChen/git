@@ -11,6 +11,7 @@ from .components import (
     render_status_badge,
 )
 from .theme import inject_theme
+from .feedback import render_request_error
 
 __all__ = [
     "inject_theme",
@@ -22,4 +23,5 @@ __all__ = [
     "render_score_ring",
     "render_skeleton",
     "render_status_badge",
+    "render_request_error",
 ]

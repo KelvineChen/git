@@ -3,7 +3,7 @@ import streamlit as st
 from api_client import api_request
 from ui import render_page_intro
 KNOWN_FIELDS = (
-    ("title", "竞赛名称"),
+    ("title", "项目名称"),
     ("creator", "发布者"),
     ("description", "描述"),
     ("created_at", "发布时间"),
@@ -30,7 +30,7 @@ def _load_competition_detail(
         "GET",
         f"/api/admin/competition/{competition_id}",
         token=token,
-        success_message="竞赛详情加载成功",
+        success_message="项目详情加载成功",
     )
     if result is None:
         return None
@@ -40,12 +40,12 @@ def _load_competition_detail(
     if isinstance(result, dict):
         return result
 
-    st.error("竞赛详情数据格式不正确")
+    st.error("项目详情数据格式不正确")
     return None
 
 
 st.set_page_config(
-    page_title="竞赛详情 - 知遇LinkLab",
+    page_title="项目详情 - 知遇LinkLab",
     page_icon="🏆",
     layout="wide",
 )
@@ -59,12 +59,12 @@ if not admin_token:
 
 competition_id = _query_competition_id()
 if not competition_id:
-    st.error("缺少 competition_id URL 参数")
-    if st.button("返回竞赛管理页面", icon=":material/arrow_back:"):
+    st.error("缺少项目编号，请返回项目列表重新选择")
+    if st.button("返回项目管理", icon=":material/arrow_back:"):
         st.switch_page("admin_competitions.py")
     st.stop()
 
-with st.spinner("正在加载竞赛详情..."):
+with st.spinner("正在加载项目详情..."):
     competition_data = _load_competition_detail(admin_token, competition_id)
 if competition_data is not None:
     displayed_fields = set()
@@ -82,5 +82,5 @@ if competition_data is not None:
         st.write(f"{field}：", value)
 
 st.divider()
-if st.button("返回竞赛管理页面", icon=":material/arrow_back:"):
+if st.button("返回项目管理", icon=":material/arrow_back:"):
     st.switch_page("admin_competitions.py")

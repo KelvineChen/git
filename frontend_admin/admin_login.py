@@ -6,8 +6,8 @@ from ui import render_brand_lockup
 LOGIN_ERROR_MESSAGES = {
     "admin_not_found": "管理员不存在",
     "invalid_admin_password": "管理员密码错误",
-    "invalid_user_password": "用户密码错误",
-    "admin_not_approved": "管理员未审核",
+    "invalid_user_password": "用户操作密码错误",
+    "admin_not_approved": "管理员账号尚未通过审核",
 }
 
 
@@ -27,8 +27,8 @@ with copy_column:
         st.markdown(
             """
             <div class="zl-auth-kicker">PLATFORM OPERATIONS</div>
-            <h1>清晰掌握平台运行状态</h1>
-            <p>集中处理用户、项目、审核与反馈，让每一次平台治理都有依据、有边界。</p>
+            <h1>知遇 LinkLab 管理后台</h1>
+            <p>统筹平台运营，规范内容治理，守护科研协作秩序。</p>
             <div class="zl-auth-proof"><span>运营统计</span><span>内容治理</span><span>权限审核</span></div>
             """,
             unsafe_allow_html=True,
@@ -38,7 +38,7 @@ with form_column:
     with st.container(key="auth_panel"):
         st.markdown(
             '<div class="zl-auth-panel-head"><h2>管理员登录</h2>'
-            '<p>请输入已审核通过的管理员凭据</p></div>',
+            '<p>请使用已通过审核的管理员账号登录</p></div>',
             unsafe_allow_html=True,
         )
         with st.form("admin_login_form"):

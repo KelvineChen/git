@@ -1,4 +1,4 @@
-import json
+from hashlib import sha256
 import os
 import re
 import sys
@@ -21,6 +21,7 @@ from shared_ui import (  # noqa: E402
     render_empty_state,
     render_metric_tile,
     render_page_intro,
+    render_request_error,
     render_score_ring,
     render_skeleton,
     render_status_badge,
@@ -28,6 +29,30 @@ from shared_ui import (  # noqa: E402
 
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
+
+
+def show_post_error(
+    message: str,
+    path: str,
+    *,
+    retryable: bool = False,
+    status_code: int | None = None,
+) -> None:
+    action_labels = {
+        "/api/parse_profile": "AI 解析",
+        "/api/parse_project": "AI 解析",
+        "/api/save_profile": "保存画像",
+        "/api/create_project": "发布项目",
+        "/api/feedback": "提交反馈",
+        "/api/interest": "感兴趣",
+        "/api/register": "注册",
+        "/api/login": "登录",
+        "/api/profile/contact": "保存联系方式设置",
+    }
+    render_request_error(
+        message, method="POST", identity=path, retryable=retryable,
+        status_code=status_code, action_label=action_labels.get(path, "原操作按钮"),
+    )
 
 
 def post_api(
@@ -47,25 +72,31 @@ def post_api(
     except requests.HTTPError as error:
         try:
             error_data = error.response.json()
-            error_code = error_data.get("error", "request_failed")
+            error_code = (
+                error_data.get("error", "request_failed")
+                if isinstance(error_data, dict) else "request_failed"
+            )
         except (AttributeError, ValueError):
             error_code = "request_failed"
         if error_messages and error_code in error_messages:
-            st.error(error_messages[error_code])
+            message = error_messages[error_code]
         else:
-            st.error(
-                f"后端请求失败（HTTP {error.response.status_code}）：{error_code}"
-            )
+            message = "服务暂时不可用，请稍后重试" if error.response.status_code >= 500 else "请求未能完成，请核对输入内容"
+        show_post_error(message, path, retryable=error.response.status_code >= 500,
+                        status_code=error.response.status_code)
         return None
     except requests.RequestException:
-        st.error("网络异常，请稍后重试")
+        show_post_error("网络异常，请稍后重试", path, retryable=True)
         return None
     except ValueError:
-        st.error("后端返回的数据格式不正确")
+        show_post_error("后端返回的数据格式不正确", path, retryable=True)
         return None
 
+    if not isinstance(result, dict):
+        show_post_error("后端返回的数据格式不正确", path, retryable=True)
+        return None
     if not result.get("success") and result.get("status") != "ok":
-        st.error(result.get("message", "操作失败，请重试"))
+        show_post_error(result.get("message", "操作失败，请重试"), path)
         return None
     return result
 
@@ -74,6 +105,7 @@ def get_api(
     path: str,
     show_error: bool = True,
     timeout: int = 15,
+    expected_empty: str | None = None,
 ) -> dict | None:
     """Call a backend GET endpoint."""
     try:
@@ -82,26 +114,27 @@ def get_api(
         result = response.json()
     except requests.HTTPError as error:
         if show_error:
-            try:
-                error_data = error.response.json()
-                error_code = error_data.get("error", "request_failed")
-            except (AttributeError, ValueError):
-                error_code = "request_failed"
-            st.error(
-                f"后端请求失败（HTTP {error.response.status_code}）：{error_code}"
+            render_request_error(
+                "服务暂时不可用，请稍后重试" if error.response.status_code >= 500 else "请求未能完成，请核对访问条件",
+                method="GET", identity=path, retryable=error.response.status_code >= 500,
+                status_code=error.response.status_code,
             )
         return None
     except requests.RequestException:
         if show_error:
-            st.error("网络异常，请稍后重试")
+            render_request_error("网络异常，请稍后重试", method="GET", identity=path, retryable=True)
         return None
     except ValueError:
         if show_error:
-            st.error("后端返回的数据格式不正确")
+            render_request_error("后端返回的数据格式不正确", method="GET", identity=path, retryable=True)
         return None
 
-    if not result.get("success") and show_error:
-        st.error(result.get("message", "读取失败，请重试"))
+    if not isinstance(result, dict):
+        if show_error:
+            render_request_error("后端返回的数据格式不正确", method="GET", identity=path, retryable=True)
+        return None
+    if not result.get("success") and show_error and result.get("message") != expected_empty:
+        render_request_error(result.get("message", "读取失败，请重试"), method="GET", identity=path)
     return result
 
 
@@ -113,10 +146,16 @@ def delete_api(path: str, params: dict | None = None) -> dict | None:
         response.raise_for_status()
         result = response.json()
     except requests.RequestException:
-        st.error("网络异常，请稍后重试")
+        render_request_error("网络异常，请稍后重试", method="DELETE", identity=path,
+                             retryable=True, action_label="取消收藏")
         return None
     except ValueError:
-        st.error("后端返回的数据格式不正确")
+        render_request_error("后端返回的数据格式不正确", method="DELETE", identity=path,
+                             retryable=True, action_label="取消收藏")
+        return None
+    if not isinstance(result, dict):
+        render_request_error("后端返回的数据格式不正确", method="DELETE", identity=path,
+                             retryable=True, action_label="取消收藏")
         return None
     if not result.get("success"):
         st.error(result.get("message", "操作失败，请重试"))
@@ -147,14 +186,40 @@ def text_to_list(value: str) -> list[str]:
     return [item.strip() for item in re.split(r"[,，\n]", value) if item.strip()]
 
 
+def render_skill_level_editor(skills: list[str]) -> dict[str, str]:
+    levels = st.session_state.get("profile_skill_levels", {})
+    levels = dict(levels) if isinstance(levels, dict) else {}
+    selected = {}
+    st.markdown("**技能等级**")
+    if not skills:
+        st.caption("暂无技能")
+    for skill in skills:
+        current = str(levels.get(skill) or "")
+        options = ["", "熟练", "掌握", "了解"]
+        if current and current not in options:
+            options.append(current)
+        key = "profile_level_" + sha256(skill.encode("utf-8")).hexdigest()[:20]
+        value = st.selectbox(
+            skill, options, index=options.index(current), key=key,
+            format_func=lambda item: item or "未填写",
+        )
+        levels[skill] = value
+        if value:
+            selected[skill] = value
+    st.session_state["profile_skill_levels"] = levels
+    return selected
+
+
 def set_profile_draft(data: dict, include_raw_text: bool = True) -> None:
     st.session_state["profile_draft"] = True
     if include_raw_text:
         st.session_state["profile_raw_text"] = data.get("raw_text", "") or ""
     st.session_state["profile_skills"] = list_to_text(data.get("skills"))
-    st.session_state["profile_skill_levels"] = json.dumps(
-        data.get("skill_levels", {}), ensure_ascii=False, indent=2
-    )
+    levels = data.get("skill_levels")
+    st.session_state["profile_skill_levels"] = dict(levels) if isinstance(levels, dict) else {}
+    for key in list(st.session_state):
+        if key.startswith("profile_level_"):
+            del st.session_state[key]
     st.session_state["profile_experience"] = list_to_text(data.get("experience"))
     st.session_state["profile_interests"] = list_to_text(data.get("interests"))
     st.session_state["profile_preference"] = data.get("preference", "") or ""
@@ -230,6 +295,12 @@ def load_home_overview(force: bool = False) -> dict:
             "profile": profile or {},
             "projects": (projects or {}).get("projects", []),
             "matches": (matches or {}).get("matches", []),
+            "load_failed": (
+                any(item is None for item in (profile, projects, matches))
+                or bool(profile and not profile.get("success") and profile.get("message") != "画像不存在")
+                or bool(projects and not projects.get("success"))
+                or bool(matches and not matches.get("success") and matches.get("message") != "请先填写画像")
+            ),
         }
     return st.session_state[cache_key]
 
@@ -316,7 +387,7 @@ def render_mutual_contact(candidate_user_id: int, project_id: int) -> None:
             st.code(contact_value)
         else:
             st.caption("对方未开放额外联系方式，可先通过账号邮箱联系。")
-        st.caption("联系方式仅因双方互选成功而展示，请尊重对方隐私。")
+        st.caption("联系方式仅向互选成功的双方展示，请尊重对方隐私。")
 
 
 def render_candidate_card(candidate: dict, project_id: int) -> None:
@@ -362,7 +433,7 @@ def render_candidate_card(candidate: dict, project_id: int) -> None:
         elif owner_status == "rejected":
             st.warning("当前标记为暂不考虑，你可以随时重新选择")
         else:
-            st.caption("候选人已表达意向，等待你处理")
+            st.caption("候选人已表达合作意向，待你确认")
 
         accept_column, decline_column = st.columns(2)
         with accept_column:
@@ -735,7 +806,7 @@ def show_home_page() -> None:
         <section class="zl-hero">
             <div class="zl-eyebrow" style="color:#83c9ff">RESEARCH COLLABORATION</div>
             <h1>你好，{escape(username)}<span class="zl-hero-status">已登录</span></h1>
-            <p>{escape(school)} · 用能力画像连接合适的项目与科研搭档。</p>
+            <p>{escape(school)} · 寻找契合的科研项目，结识志同道合的伙伴。</p>
         </section>
         """,
         unsafe_allow_html=True,
@@ -743,6 +814,13 @@ def show_home_page() -> None:
 
     with st.spinner("正在整理你的协作概览..."):
         overview = load_home_overview()
+    if overview.get("load_failed"):
+        st.warning("协作概览暂未完整加载，请重新读取。")
+        st.button(
+            "重新加载概览", key="retry_home_overview", icon=":material/refresh:",
+            on_click=lambda: st.session_state.pop(f"home_overview_{st.session_state['user_id']}", None),
+        )
+        return
     completeness = profile_completeness(overview["profile"])
     projects = overview["projects"]
     matches = overview["matches"]
@@ -752,10 +830,10 @@ def show_home_page() -> None:
 
     metric_columns = st.columns(4)
     metrics = (
-        ("画像完整度", f"{completeness}%", "blue", "person_search", "资料越完整，推荐越准确"),
+        ("画像完整度", f"{completeness}%", "blue", "person_search", "完善资料，丰富匹配依据"),
         ("推荐项目", str(len(matches)), "cyan", "recommend", "根据当前画像生成"),
         ("我发布的项目", str(len(projects)), "violet", "science", "由你发起的合作机会"),
-        ("已表达意向", str(interested_count), "green", "handshake", "等待进一步建立连接"),
+        ("已表达意向", str(interested_count), "green", "handshake", "已提交合作意向的项目"),
     )
     for column, (label, value, accent, icon, caption) in zip(metric_columns, metrics):
         with column:
@@ -769,14 +847,14 @@ def show_home_page() -> None:
 
     st.markdown(
         "<div class='zl-section'><div class='zl-section-title'>快速开始</div>"
-        "<div class='zl-section-caption'>从完善画像到建立连接，只需要三个步骤。</div></div>",
+        "<div class='zl-section-caption'>完善画像，发现项目，发起合作。</div></div>",
         unsafe_allow_html=True,
     )
     quick_columns = st.columns(3)
     quick_actions = (
-        (quick_columns[0], "完善能力画像", "让系统更准确地理解你的技能与经历", "我的画像", "badge"),
+        (quick_columns[0], "完善能力画像", "记录专业技能与研究经历", "我的画像", "badge"),
         (quick_columns[1], "发现科研项目", "浏览同校与跨校开放的合作机会", "发现项目", "travel_explore"),
-        (quick_columns[2], "发布招募需求", "把项目需求转换成清晰的结构化标签", "发布项目", "add_circle"),
+        (quick_columns[2], "发布招募需求", "明确研究目标与合作需求", "发布项目", "add_circle"),
     )
     for column, title, description, page, icon in quick_actions:
         with column:
@@ -798,7 +876,7 @@ def show_home_page() -> None:
 
     st.markdown(
         "<div class='zl-section'><div class='zl-section-title'>优先推荐</div>"
-        "<div class='zl-section-caption'>根据你的画像展示当前得分最高的项目。</div></div>",
+        "<div class='zl-section-caption'>按当前画像的匹配评分排序，供合作选择参考。</div></div>",
         unsafe_allow_html=True,
     )
     if matches:
@@ -807,17 +885,16 @@ def show_home_page() -> None:
     else:
         render_empty_state(
             "暂时没有推荐项目",
-            "完善画像后再来看看，或者先浏览当前开放的科研项目。",
+            "请完善画像，或浏览当前开放的科研项目。",
             icon="manage_search",
         )
 
-    if st.button(
+    st.button(
         "刷新概览",
         key="refresh_home",
         icon=":material/refresh:",
-    ):
-        load_home_overview(force=True)
-        st.rerun()
+        on_click=lambda: st.session_state.pop(f"home_overview_{st.session_state['user_id']}", None),
+    )
 
 
 def show_discover_projects_page() -> None:
@@ -828,7 +905,7 @@ def show_discover_projects_page() -> None:
         show_project_detail()
         return
 
-    render_page_heading("发现项目", "浏览同校与跨校科研机会，快速找到值得进一步了解的方向。")
+    render_page_heading("发现项目", "浏览同校与跨校科研项目，寻找契合的合作机会。")
     keyword = st.text_input(
         "搜索项目",
         placeholder="搜索项目名称、描述、学校或技能",
@@ -924,7 +1001,7 @@ def show_auth_page() -> None:
                 """
                 <div class="zl-auth-kicker">RESEARCH COLLABORATION NETWORK</div>
                 <h1>知遇 LinkLab</h1>
-                <p>找到你的科研搭档。让能力、项目与同行彼此找到，一起把研究想法变成成果。</p>
+                <p>找到你的科研搭档。以能力连接机遇，与同行共赴探索。</p>
                 <div class="zl-auth-proof">
                     <span>结构化能力画像</span>
                     <span>可解释匹配</span>
@@ -1006,7 +1083,7 @@ def show_auth_page() -> None:
                                 },
                             )
                         if result:
-                            show_success("注册成功，请切换到登录")
+                            show_success("注册成功，请登录")
             else:
                 st.markdown(
                     '<div class="zl-auth-panel-head"><h2>欢迎回来</h2>'
@@ -1041,7 +1118,7 @@ def show_auth_page() -> None:
                         if result:
                             token = result.get("token")
                             if not token:
-                                st.error("登录成功但未获取到 token")
+                                st.error("未获取到登录凭证，请重新登录")
                             else:
                                 set_current_user(
                                     result["user_id"],
@@ -1059,33 +1136,27 @@ def show_auth_page() -> None:
 
 
 def show_profile_page() -> None:
-    render_page_heading("我的画像", "让系统准确理解你的技能、经历、兴趣和协作节奏。")
+    render_page_heading("我的画像", "记录技能、经历与研究兴趣，明确协作偏好和时间投入。")
     user_id = st.session_state["user_id"]
     loaded_key = f"profile_loaded_{user_id}"
-
-    if not st.session_state.get(loaded_key):
-        with st.spinner("正在读取画像..."):
-            existing = get_api(f"/api/profile/{user_id}")
-        if existing is not None:
-            st.session_state[loaded_key] = True
-            if existing.get("success"):
-                set_profile_draft(existing)
-                st.success("画像加载成功")
-
     contact_loaded_key = f"contact_loaded_{user_id}"
-    if not st.session_state.get(contact_loaded_key):
-        with st.spinner("正在读取联系方式设置..."):
-            contact_data = get_api(f"/api/profile/{user_id}", show_error=False)
-        st.session_state["contact_method"] = (
-            (contact_data or {}).get("contact_method") or ""
-        )
-        st.session_state["contact_value"] = (
-            (contact_data or {}).get("contact_value") or ""
-        )
-        st.session_state["contact_visible"] = bool(
-            (contact_data or {}).get("contact_visible", False)
-        )
-        st.session_state[contact_loaded_key] = True
+
+    if not st.session_state.get(loaded_key) or not st.session_state.get(contact_loaded_key):
+        with st.spinner("正在读取画像..."):
+            existing = get_api(f"/api/profile/{user_id}", expected_empty="画像不存在")
+        if existing is None:
+            return
+        if not existing.get("success") and existing.get("message") != "画像不存在":
+            return
+        if not st.session_state.get(loaded_key):
+            if existing.get("success") and not st.session_state.get("profile_draft"):
+                set_profile_draft(existing)
+            st.session_state[loaded_key] = True
+        if not st.session_state.get(contact_loaded_key):
+            st.session_state["contact_method"] = existing.get("contact_method") or ""
+            st.session_state["contact_value"] = existing.get("contact_value") or ""
+            st.session_state["contact_visible"] = bool(existing.get("contact_visible", False))
+            st.session_state[contact_loaded_key] = True
 
     raw_text = st.text_area(
         "自然语言描述",
@@ -1123,12 +1194,9 @@ def show_profile_page() -> None:
             st.text_area("技能（一行一项）", key="profile_skills", height=130)
             st.text_area("项目经历（一行一项）", key="profile_experience", height=130)
             st.text_input("协作偏好", key="profile_preference")
+        skills = list(dict.fromkeys(text_to_list(st.session_state["profile_skills"])))
         with right:
-            st.text_area(
-                "技能等级（JSON对象）",
-                key="profile_skill_levels",
-                height=130,
-            )
+            skill_levels = render_skill_level_editor(skills)
             st.text_area("兴趣方向（一行一项）", key="profile_interests", height=130)
             st.text_input("时间投入", key="profile_time")
 
@@ -1138,32 +1206,26 @@ def show_profile_page() -> None:
             icon=":material/save:",
             use_container_width=True,
         ):
-            try:
-                skill_levels = json.loads(st.session_state["profile_skill_levels"])
-                if not isinstance(skill_levels, dict):
-                    raise ValueError
-            except (json.JSONDecodeError, ValueError):
-                st.error("技能等级必须是JSON对象，例如 {\"Python\": \"熟练\"}")
-            else:
-                parsed_data = {
-                    "skills": text_to_list(st.session_state["profile_skills"]),
-                    "skill_levels": skill_levels,
-                    "experience": text_to_list(st.session_state["profile_experience"]),
-                    "interests": text_to_list(st.session_state["profile_interests"]),
-                    "preference": st.session_state["profile_preference"].strip(),
-                    "time_commitment": st.session_state["profile_time"].strip(),
-                }
-                with st.spinner("正在保存画像..."):
-                    result = post_api(
-                        "/api/save_profile",
-                        {
-                            "user_id": user_id,
-                            "raw_text": st.session_state["profile_raw_text"],
-                            "parsed_data": parsed_data,
-                        },
-                    )
-                if result:
-                    show_success("画像保存成功")
+            parsed_data = {
+                "skills": skills,
+                "skill_levels": skill_levels,
+                "experience": text_to_list(st.session_state["profile_experience"]),
+                "interests": text_to_list(st.session_state["profile_interests"]),
+                "preference": st.session_state["profile_preference"].strip(),
+                "time_commitment": st.session_state["profile_time"].strip(),
+            }
+            with st.spinner("正在保存画像..."):
+                result = post_api(
+                    "/api/save_profile",
+                    {
+                        "user_id": user_id,
+                        "raw_text": st.session_state["profile_raw_text"],
+                        "parsed_data": parsed_data,
+                    },
+                )
+            if result:
+                st.session_state.pop(f"home_overview_{user_id}", None)
+                show_success("画像保存成功")
 
     st.divider()
     st.subheader("匹配后的联系方式")
@@ -1219,7 +1281,7 @@ def show_profile_page() -> None:
 
 
 def show_publish_project_page() -> None:
-    render_page_heading("发布项目", "把自然语言需求整理成清晰、可检索的招募信息。")
+    render_page_heading("发布项目", "明确项目背景与合作需求，发布科研招募信息。")
     project_name = st.text_input("项目名称", key="new_project_name")
     raw_text = st.text_area(
         "需求描述",
@@ -1304,7 +1366,7 @@ def show_publish_project_page() -> None:
                         },
                     )
                 if result:
-                    show_success(f"项目发布成功，项目ID：{result['project_id']}")
+                    show_success(f"项目发布成功，项目编号：{result['project_id']}")
 
 
 def show_match_recommendations_page() -> None:
@@ -1317,7 +1379,7 @@ def show_match_recommendations_page() -> None:
 
     render_page_heading(
         "为你推荐的匹配项目",
-        "根据技能、时间投入和经历相关性，展示当前最适合你的合作机会。",
+        "依据技能、时间投入与经历相关性推荐项目，评分仅供合作选择参考。",
     )
     success_message = st.session_state.pop("interest_success_message", None)
     if success_message:
@@ -1343,13 +1405,13 @@ def show_match_recommendations_page() -> None:
     matches = result.get("matches", [])
     if not matches:
         render_empty_state(
-            "暂时没有适合的项目",
-            "可以先完善画像，或稍后等待更多项目发布。",
+            "暂无推荐项目",
+            "请完善画像，或稍后查看新发布的项目。",
             icon="recommend",
         )
         return
 
-    st.success(f"匹配成功，共找到 {len(matches)} 个项目")
+    st.caption(f"共 {len(matches)} 个推荐项目")
     for match in matches:
         render_match_card(match, source="recommendation")
 
@@ -1362,7 +1424,7 @@ def show_my_matches_page() -> None:
         show_project_detail()
         return
 
-    render_page_heading("我的匹配", "查看你表达过意向的项目和发起人的处理结果。")
+    render_page_heading("我的匹配", "查看合作意向、发起人回应与互选进展。")
     with st.spinner("正在读取匹配进度..."):
         result = get_api(f"/api/my_matches/{st.session_state['user_id']}")
     if result is None or not result.get("success"):
@@ -1370,8 +1432,8 @@ def show_my_matches_page() -> None:
     matches = result.get("matches", [])
     if not matches:
         render_empty_state(
-            "还没有匹配进度",
-            "先去发现项目，对合适的合作机会表达兴趣。",
+            "暂无合作意向记录",
+            "浏览科研项目，向意向项目发起人表达合作意愿。",
             icon="handshake",
         )
         return
@@ -1492,12 +1554,12 @@ def show_my_projects_page() -> None:
     if not projects:
         render_empty_state(
             "你还没有发布项目",
-            "整理好研究目标和所需能力后，可以创建第一条招募信息。",
+            "明确研究目标与技能需求后，即可发布项目。",
             icon="science",
         )
         return
 
-    st.success(f"共读取到 {len(projects)} 个项目")
+    st.caption(f"共 {len(projects)} 个项目")
     status_labels = {
         "recruiting": "招募中",
         "full": "已满员",
@@ -1554,7 +1616,7 @@ def show_my_projects_page() -> None:
                 continue
             candidates = candidates_result.get("candidates", [])
             if not candidates:
-                st.caption("暂时还没有用户对这个项目表达感兴趣")
+                st.caption("暂无用户表达合作意向")
             else:
                 st.caption(f"共有 {len(candidates)} 位候选人表达了意向")
                 for candidate in candidates:
@@ -1568,7 +1630,7 @@ def show_favorites_page() -> None:
     ):
         show_project_detail()
         return
-    render_page_heading("我的收藏", "把值得进一步了解的项目集中保存。")
+    render_page_heading("我的收藏", "保存关注的科研项目，便于后续查看。")
     with st.spinner("正在读取收藏..."):
         result = get_api(f"/api/favorites/{st.session_state['user_id']}")
     if result is None or not result.get("success"):
@@ -1577,11 +1639,11 @@ def show_favorites_page() -> None:
     if not favorites:
         render_empty_state(
             "还没有收藏项目",
-            "在发现项目时收藏感兴趣的方向，方便稍后继续查看。",
+            "浏览项目时可收藏意向项目，便于后续查看。",
             icon="bookmark",
         )
         return
-    st.success(f"已收藏 {len(favorites)} 个项目")
+    st.caption(f"已收藏 {len(favorites)} 个项目")
     for favorite in favorites:
         project_id = favorite.get("project_id")
         with st.container(border=True, key=f"favorite_card_{project_id}"):
