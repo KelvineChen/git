@@ -43,10 +43,61 @@ def _load_competitions(
     return _extract_competitions(result)
 
 
+# [TEST-ONLY] 硬删除竞赛，正式版需移除。
+@st.dialog("删除竞赛")
+def _delete_competition_dialog(
+    project_id: int,
+    title: str,
+    token: str,
+) -> None:
+    st.warning(f"此操作将永久删除竞赛及其关联数据：{title}")
+    confirmation = st.text_input(
+        "请输入竞赛名称进行确认",
+        key=f"delete_competition_confirmation_{project_id}",
+    )
+    if st.button(
+        "确认永久删除",
+        key=f"confirm_delete_competition_{project_id}",
+        type="primary",
+        use_container_width=True,
+    ):
+        if confirmation.strip() != title:
+            st.error("竞赛名称不一致，无法删除")
+            return
+        with st.spinner("正在永久删除竞赛..."):
+            result = api_request(
+                "DELETE",
+                f"/api/admin/competitions/{project_id}",
+                token=token,
+                success_message="竞赛已删除",
+            )
+        if result is not None:
+            st.rerun()
+
+
 st.set_page_config(
     page_title="项目招募管理 - 知遇LinkLab",
     page_icon="🏆",
     layout="wide",
+)
+
+st.markdown(
+    """
+    <style>
+    div[data-testid="stButton"] button {
+        min-height: 2rem;
+        padding: 0.2rem 0.6rem;
+        font-size: 0.82rem;
+    }
+    button[aria-label="删除竞赛"],
+    button[aria-label="确认永久删除"] {
+        background: #d92d20 !important;
+        border-color: #d92d20 !important;
+        color: white !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 render_page_intro("项目招募管理", "搜索平台项目，检查内容并执行下架或恢复操作。", eyebrow="内容治理")
@@ -162,5 +213,18 @@ for project in competitions:
                         )
                     if saved is not None:
                         st.rerun()
+
+        # [TEST-ONLY] 硬删除竞赛，正式版需移除。
+        if st.button(
+            "删除竞赛",
+            key=f"delete_competition_{project_id}",
+            type="primary",
+            use_container_width=True,
+        ):
+            _delete_competition_dialog(
+                project_id,
+                str(project.get("title") or "未命名项目"),
+                admin_token,
+            )
 
 st.page_link("admin_dashboard.py", label="返回管理员首页", icon=":material/arrow_back:")

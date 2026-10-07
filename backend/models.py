@@ -21,6 +21,9 @@ class User(Base):
     user_password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     role: Mapped[str] = mapped_column(String(30), default="user", nullable=False)
     admin_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    is_banned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    banned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    ban_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
     profile: Mapped["UserProfile | None"] = relationship(back_populates="user")

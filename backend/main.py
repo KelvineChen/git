@@ -35,7 +35,7 @@ from models import (
 )
 
 app = FastAPI()
-ADMIN_TOKENS: set[str] = set()
+ADMIN_TOKENS: dict[str, int] = {}
 
 
 @app.on_event("startup")
@@ -152,6 +152,10 @@ class FeedbackReplyRequest(BaseModel):
 
 class AdminProjectModerationRequest(BaseModel):
     action: str
+    reason: str = ""
+
+
+class AdminBanUserRequest(BaseModel):
     reason: str = ""
 
 
@@ -381,6 +385,15 @@ def auth_login(
             content={"error": "invalid_password"},
         )
 
+    if user.is_banned:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": "account_banned",
+                "reason": user.ban_reason or "",
+            },
+        )
+
     token = str(uuid4())
     return {
         "status": "ok",
@@ -427,6 +440,15 @@ def admin_login(
             content={"error": "invalid_user_password"},
         )
 
+    if admin.is_banned:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": "account_banned",
+                "reason": admin.ban_reason or "",
+            },
+        )
+
     if admin.admin_status != "approved":
         return JSONResponse(
             status_code=400,
@@ -434,7 +456,7 @@ def admin_login(
         )
 
     token = str(uuid4())
-    ADMIN_TOKENS.add(token)
+    ADMIN_TOKENS[token] = admin.id
     return {
         "status": "ok",
         "token": token,
@@ -454,6 +476,13 @@ def _require_admin_token(authorization: str | None) -> str | None:
     return None
 
 
+def _admin_user_id(authorization: str | None) -> int | None:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization.removeprefix("Bearer ").strip()
+    return ADMIN_TOKENS.get(token)
+
+
 def _admin_auth_response(authorization: str | None) -> JSONResponse | None:
     error = _require_admin_token(authorization)
     if error:
@@ -467,6 +496,7 @@ def _server_error() -> JSONResponse:
 
 def _serialize_user(user: User) -> dict:
     return {
+        "id": user.id,
         "username": user.username,
         "email": user.email,
         "school": user.school,
@@ -474,6 +504,9 @@ def _serialize_user(user: User) -> dict:
         "grade": user.grade,
         "role": user.role,
         "created_at": user.created_at.isoformat(),
+        "is_banned": user.is_banned,
+        "banned_at": user.banned_at.isoformat() if user.banned_at else None,
+        "ban_reason": user.ban_reason or "",
     }
 
 
@@ -487,7 +520,11 @@ def admin_users(
         return auth_error
 
     try:
-        users = db.scalars(select(User).order_by(User.created_at.desc())).all()
+        users = db.scalars(
+            select(User)
+            .where(User.role == "user")
+            .order_by(User.created_at.desc())
+        ).all()
         return [_serialize_user(user) for user in users]
     except Exception:
         return _server_error()
@@ -590,7 +627,7 @@ def admin_users_search(
         return auth_error
 
     try:
-        conditions = []
+        conditions = [User.role == "user"]
         if username.strip():
             conditions.append(User.username.ilike(f"%{username.strip()}%"))
         if school.strip():
@@ -922,6 +959,191 @@ def admin_competition_detail(
             )
         return _serialize_competition(project)
     except Exception:
+        return _server_error()
+
+
+# [TEST-ONLY] 硬删除用户，正式版需移除。
+@app.delete("/api/admin/users/{user_id}")
+def admin_delete_user(
+    user_id: int,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+
+    if _admin_user_id(authorization) == user_id:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "cannot_delete_self"},
+        )
+
+    try:
+        user = db.get(User, user_id)
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "user_not_found"},
+            )
+
+        project_ids = list(
+            db.scalars(
+                select(Project.id).where(Project.owner_id == user_id)
+            ).all()
+        )
+        project_count = len(project_ids)
+
+        if project_ids:
+            db.execute(
+                delete(ProjectProfile).where(
+                    ProjectProfile.project_id.in_(project_ids)
+                )
+            )
+            db.execute(
+                delete(MatchRecord).where(
+                    MatchRecord.project_id.in_(project_ids)
+                )
+            )
+            db.execute(
+                delete(OwnerInterest).where(
+                    OwnerInterest.project_id.in_(project_ids)
+                )
+            )
+            db.execute(
+                delete(FavoriteProject).where(
+                    FavoriteProject.project_id.in_(project_ids)
+                )
+            )
+
+        db.execute(delete(UserProfile).where(UserProfile.user_id == user_id))
+        db.execute(delete(Notification).where(Notification.user_id == user_id))
+        db.execute(
+            delete(FavoriteProject).where(FavoriteProject.user_id == user_id)
+        )
+        db.execute(delete(Feedback).where(Feedback.user_id == user_id))
+        db.execute(delete(MatchRecord).where(MatchRecord.user_id == user_id))
+        db.execute(delete(OwnerInterest).where(OwnerInterest.user_id == user_id))
+        db.execute(delete(Project).where(Project.owner_id == user_id))
+        db.execute(delete(User).where(User.id == user_id))
+        db.commit()
+        return {
+            "success": True,
+            "deleted_user": user.username,
+            "deleted_projects": project_count,
+        }
+    except SQLAlchemyError:
+        db.rollback()
+        return _server_error()
+
+
+# [TEST-ONLY] 硬删除竞赛，正式版需移除。
+@app.delete("/api/admin/competitions/{project_id}")
+def admin_delete_competition(
+    project_id: int,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+
+    try:
+        project = db.get(Project, project_id)
+        if project is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "competition_not_found"},
+            )
+
+        project_name = project.name
+        db.execute(
+            delete(ProjectProfile).where(ProjectProfile.project_id == project_id)
+        )
+        db.execute(
+            delete(MatchRecord).where(MatchRecord.project_id == project_id)
+        )
+        db.execute(
+            delete(OwnerInterest).where(OwnerInterest.project_id == project_id)
+        )
+        db.execute(
+            delete(FavoriteProject).where(
+                FavoriteProject.project_id == project_id
+            )
+        )
+        db.execute(delete(Project).where(Project.id == project_id))
+        db.commit()
+        return {
+            "success": True,
+            "deleted_project": project_name,
+        }
+    except SQLAlchemyError:
+        db.rollback()
+        return _server_error()
+
+
+@app.post("/api/admin/users/{user_id}/ban")
+def admin_ban_user(
+    user_id: int,
+    request: AdminBanUserRequest,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+
+    try:
+        user = db.get(User, user_id)
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "user_not_found"},
+            )
+
+        user.is_banned = True
+        user.banned_at = datetime.now()
+        user.ban_reason = request.reason.strip()[:255] or None
+        projects = db.scalars(
+            select(Project).where(Project.owner_id == user_id)
+        ).all()
+        for project in projects:
+            project.status = "closed"
+        db.commit()
+        return {
+            "success": True,
+            "closed_projects": len(projects),
+        }
+    except SQLAlchemyError:
+        db.rollback()
+        return _server_error()
+
+
+@app.post("/api/admin/users/{user_id}/unban")
+def admin_unban_user(
+    user_id: int,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+
+    try:
+        user = db.get(User, user_id)
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "user_not_found"},
+            )
+
+        user.is_banned = False
+        user.banned_at = None
+        user.ban_reason = None
+        db.commit()
+        return {"success": True}
+    except SQLAlchemyError:
+        db.rollback()
         return _server_error()
 
 

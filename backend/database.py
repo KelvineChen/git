@@ -38,6 +38,9 @@ def init_db() -> None:
         "user_password_hash": "VARCHAR(255)",
         "role": "VARCHAR(30) DEFAULT 'user'",
         "admin_status": "VARCHAR(30)",
+        "is_banned": "BOOLEAN NOT NULL DEFAULT 0",
+        "banned_at": "DATETIME",
+        "ban_reason": "VARCHAR(255)",
     }
     missing_columns = [
         (name, column_type)
