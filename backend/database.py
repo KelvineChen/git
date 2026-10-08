@@ -41,6 +41,7 @@ def init_db() -> None:
         "is_banned": "BOOLEAN NOT NULL DEFAULT 0",
         "banned_at": "DATETIME",
         "ban_reason": "VARCHAR(255)",
+        "email_verified_at": "DATETIME",
     }
     missing_columns = [
         (name, column_type)

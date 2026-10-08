@@ -2,7 +2,7 @@
 
 知遇LinkLab 是一个面向高校科研协作的智能项目匹配原型。用户可以建立可编辑的能力画像，发布科研项目，并根据技能、时间投入和项目经历获得可解释的项目推荐。
 
-当前版本已经具备从注册登录、画像保存、项目发布、项目发现、批量推荐、双向意向、通知、收藏、反馈到管理员治理的完整演示闭环，适合作为功能较完整的科研协作匹配原型继续迭代。
+当前版本已经具备从注册登录、邮箱验证、画像保存、项目发布、项目发现、批量推荐、双向意向、通知、收藏、反馈到管理员治理的完整演示闭环，适合作为功能较完整的科研协作匹配原型继续迭代。
 
 ## 已实现功能
 
@@ -12,11 +12,13 @@
 - 使用用户名和密码登录，Streamlit 保存当前会话
 - 普通用户密码使用 PBKDF2-HMAC-SHA256、随机盐和 600000 次迭代后存储
 - 密码至少 8 位，注册时校验两次输入
-- SQLite + SQLAlchemy 持久化
-- 数据库文件：`backend/app.db`
+- SQLAlchemy 持久化：本地默认使用 SQLite，云端通过 `DATABASE_URL` 使用 PostgreSQL
+- 本地数据库文件：`backend/app.db`（运行时生成，不提交 Git）
 - 后端启动时自动创建缺失的数据表
+- 登录令牌仅以 SHA-256 摘要存入 `user_sessions`，有效期默认 30 天，退出登录后撤销
+- 支持 6 位邮箱验证码；验证通过前，账户邮箱不会在双方匹配详情中展示
 
-旧版无密码注册和登录接口已经移除，避免绕过密码验证。登录会返回 token；当前普通用户 token 尚未覆盖全部业务接口鉴权，因此仍属于原型认证。
+旧版无密码注册和登录接口已经移除，避免绕过密码验证。普通用户 token 已用于邮箱验证接口鉴权；其他部分业务接口仍在逐步迁移，因此当前认证体系仍属于原型阶段。
 
 ### 管理员后台
 
@@ -57,6 +59,19 @@
 - 自动校验、补全和修正模型返回字段
 - 解析结果可编辑并保存
 - 再次登录时自动读取已有画像
+- 可向注册邮箱发送验证码并完成真实性验证
+- 验证码只保存 HMAC-SHA256 摘要，10 分钟过期，具备重发间隔、每日额度和错误次数限制
+
+### 邮箱验证与隐私
+
+- 邮件通过 Resend HTTPS API 发送，不在项目中保存邮件服务密钥
+- 验证码默认 10 分钟有效，同一账号或邮箱 24 小时内最多发送 10 次
+- 连续发送默认需要间隔 60 秒，单个验证码最多允许 5 次错误尝试
+- 新验证码生成后，旧的未使用验证码立即失效
+- 验证码只保存带独立 Pepper 的 HMAC-SHA256 摘要
+- 邮箱验证接口要求有效的 Bearer token，服务端数据库只保存 token 的 SHA-256 摘要
+- 邮箱验证未启用或邮件服务配置不完整时，页面会保留原有业务能力并给出明确提示
+- 双方达成互选后，只有已验证的账户邮箱才会作为联系方式展示
 
 ### 发布与管理项目
 
@@ -156,11 +171,12 @@ total_score = skill_match × 0.6
 
 - 前端：Streamlit
 - 后端：FastAPI、Uvicorn
-- 数据库：SQLite、SQLAlchemy
+- 数据库：SQLite（本地）、PostgreSQL（云端）、SQLAlchemy、Alembic
 - AI：OpenAI Python SDK 兼容接口
 - 默认模型：`qwen-plus`
 - HTTP：Requests
 - 密码哈希：PBKDF2-HMAC-SHA256、bcrypt
+- 邮件服务：Resend HTTPS API
 
 ## 项目结构
 
@@ -169,9 +185,12 @@ total_score = skill_match × 0.6
 ├── backend/
 │   ├── main.py          # API、匹配算法和业务逻辑
 │   ├── ai_service.py    # AI 解析、归一化与语义评分
+│   ├── email_service.py # 邮箱验证码邮件发送适配器
 │   ├── database.py      # 数据库连接、会话和初始化
 │   ├── models.py        # SQLAlchemy 数据模型
-│   ├── app.db           # SQLite 数据库
+│   ├── alembic/         # 正式数据库迁移脚本
+│   ├── alembic.ini      # Alembic 配置
+│   ├── app.db           # 本地运行时生成的 SQLite 数据库
 │   ├── init_admin.py    # 初始化管理员（当前脚本参数需后续安全加固）
 │   └── requirements.txt
 ├── frontend/
@@ -187,12 +206,17 @@ total_score = skill_match × 0.6
 │   └── assets/          # 桌面和移动端科研协作主视觉
 ├── data/
 │   └── zhilink.db       # 旧数据库迁移备份
+├── tests/               # 后端安全逻辑和 Streamlit 回归测试
+├── render.yaml          # Render 后端部署配置
+├── .env.example         # 环境变量示例，不包含真实密钥
 └── README.md
 ```
 
 ## 数据表
 
 - `users`：账号和学校信息
+- `user_sessions`：普通用户登录会话，只保存 token 摘要、有效期和撤销状态
+- `email_verifications`：验证码摘要、有效期、尝试次数和使用状态
 - `user_profiles`：用户结构化画像
 - `projects`：项目基本信息和状态
 - `project_profiles`：结构化项目需求
@@ -223,6 +247,20 @@ $env:LLM_MODEL = "qwen-plus"
 ```
 
 不要将真实 API Key 写入代码或提交到 Git。
+
+需要在本地测试邮箱验证时，再配置以下变量：
+
+```powershell
+$env:EMAIL_VERIFICATION_ENABLED = "true"
+$env:EMAIL_PROVIDER = "resend"
+$env:EMAIL_API_KEY = "你的 Resend API Key"
+$env:EMAIL_FROM = "知遇 LinkLab <verify@你的已验证域名>"
+$env:EMAIL_CODE_PEPPER = "至少 32 位、与 API Key 不同的随机密钥"
+```
+
+尚未完成 Resend 发件域名验证时，应保持
+`EMAIL_VERIFICATION_ENABLED=false`。验证码有效期、发送间隔、每日限额和最大尝试次数
+可通过 `.env.example` 中对应变量调整。
 
 创建初始管理员（当前脚本）：
 
@@ -265,15 +303,14 @@ streamlit run admin_app.py --server.port 8502
 
 ```text
 Root Directory: backend
-Build Command: pip install -r requirements.txt
-Pre-Deploy Command: alembic upgrade head
+Build Command: pip install -r requirements.txt && alembic upgrade head
 Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
 Health Check Path: /api/health
 ```
 
-`preDeployCommand` 在新版本发布前执行数据库迁移。迁移返回非零状态时，
-Render 会将部署标记为失败，不会用新版本启动应用。不要把
-`alembic upgrade head` 拼接进 `Start Command`，否则每次服务重启都会重复执行迁移。
+免费 Render 服务不提供 Pre-Deploy Command，因此迁移在 Build Command 中执行。
+迁移返回非零状态时构建失败，应用不会带着不完整的数据库结构启动。不要把
+`alembic upgrade head` 拼接进 Start Command，否则每次服务重启都会重复执行迁移。
 
 后端必须配置以下环境变量：
 
@@ -282,10 +319,22 @@ DATABASE_URL=postgresql+psycopg2://user:password@host:5432/database
 LLM_API_KEY=你的 DashScope API Key
 LLM_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 LLM_MODEL=qwen-plus
+EMAIL_VERIFICATION_ENABLED=true
+EMAIL_PROVIDER=resend
+EMAIL_API_KEY=你的 Resend API Key
+EMAIL_FROM=知遇 LinkLab <verify@你的已验证域名>
+EMAIL_CODE_PEPPER=至少32位的独立随机密钥
+EMAIL_CODE_EXPIRE_MINUTES=10
+EMAIL_SEND_INTERVAL_SECONDS=60
+EMAIL_DAILY_LIMIT=10
+EMAIL_MAX_ATTEMPTS=5
 ```
 
 Render 提供的 PostgreSQL 地址如果以 `postgresql://` 开头，可以改为
-`postgresql+psycopg2://`。不要提交真实数据库密码或 API Key。
+`postgresql+psycopg2://`。`EMAIL_API_KEY`、`EMAIL_CODE_PEPPER`、数据库密码和
+LLM Key 都属于敏感信息，不得提交到 GitHub。正式开启邮箱验证前，应先在
+Resend 验证发件域名，并确认 `EMAIL_FROM` 使用该域名；未完成时保持
+`EMAIL_VERIFICATION_ENABLED=false`。建议最后再将开关改为 `true`，避免服务在配置不完整时对外开放发送入口。
 
 ### Streamlit 用户端（Streamlit Community Cloud）
 
@@ -340,9 +389,17 @@ alembic revision --autogenerate -m "describe schema change"
 alembic upgrade head
 ```
 
-现有 `app.db` 已由旧版代码创建表，不能直接执行初始建表迁移。备份并确认
-表结构与初始迁移一致后，可执行 `alembic stamp head` 只记录当前版本；新建的
-SQLite 或 PostgreSQL 空库应执行 `alembic upgrade head`。
+新建的 SQLite 或 PostgreSQL 空库应直接执行 `alembic upgrade head`。已有旧版
+`app.db` 必须先备份并检查结构，不能直接标记到最新版本。若数据库已完整包含
+`0007_user_ban_fields` 及以前的结构，可执行：
+
+```powershell
+alembic stamp 0007_user_ban_fields
+alembic upgrade head
+```
+
+这样会实际执行 `0008_email_verification`，创建登录会话和邮箱验证结构。若旧库结构
+不确定，应先复制数据库进行迁移演练，不要直接对唯一数据副本执行 `stamp`。
 
 ### 本地模拟生产启动
 
@@ -367,8 +424,8 @@ $env:BACKEND_URL = "http://localhost:8000"
 streamlit run admin_app.py --server.address 0.0.0.0 --server.port 8502
 ```
 
-本地继续使用已有 `backend/app.db` 时，应先按上一节执行一次
-`alembic stamp head`，不要对已经存在表的数据库直接运行初始迁移。
+本地继续使用已有 `backend/app.db` 时，应按上一节先备份、确认结构，再从对应版本
+执行迁移；不要为了消除报错直接运行 `alembic stamp head`。
 
 访问地址：
 
@@ -384,6 +441,10 @@ streamlit run admin_app.py --server.address 0.0.0.0 --server.port 8502
 | GET | `/api/health` | 健康检查 |
 | POST | `/api/auth/register` | 用户密码注册 |
 | POST | `/api/auth/login` | 用户名密码登录 |
+| POST | `/api/auth/logout` | 撤销当前用户会话 |
+| GET | `/api/email/status` | 查询当前邮箱验证状态（Bearer token） |
+| POST | `/api/email/send_code` | 向当前账户邮箱发送验证码（Bearer token） |
+| POST | `/api/email/verify` | 校验验证码并标记邮箱已验证（Bearer token） |
 | POST | `/api/admin/register` | 管理员注册申请 |
 | POST | `/api/admin/login` | 管理员登录 |
 | GET/POST | `/api/admin/*` | 管理员查询与审核接口 |
@@ -414,17 +475,19 @@ streamlit run admin_app.py --server.address 0.0.0.0 --server.port 8502
 
 1. 打开健康检查，确认返回 `{"status":"ok"}`。
 2. 注册两个不同学校的账号，验证正确密码可登录、错误密码被拒绝。
-3. 为一个账号解析并保存画像，刷新后确认数据仍存在。
-4. 用另一个账号发布项目，在“我的项目”中展开查看详情。
-5. 回到候选账号，在“匹配推荐”切换同校和跨校范围。
-6. 确认项目按总分排序，并显示三项进度条及解释。
-7. 在 Swagger 中测试意向接口和双向确认接口。
-8. 创建初始管理员，在管理员端验证登录、用户和项目查询。
-9. 收藏项目，确认“我的收藏”可以查看详情和取消收藏。
-10. 提交意见反馈，在管理端回复并确认用户收到通知。
-11. 在管理端下架项目，确认项目从发现和推荐中消失，再恢复项目。
-12. 分别以 `1440×900`、`1024×768` 和 `390×844` 检查登录页、首页、匹配推荐和管理控制台，确认没有文字重叠或横向滚动。
-13. 检查页面入场、匹配分析展开收起、按钮反馈、加载状态和系统减少动态效果模式。
+3. 配置邮件服务后发送邮箱验证码，确认错误验证码被拒绝、正确验证码验证成功。
+4. 在邮箱未验证时完成双方互选，确认邮箱不展示；验证后确认邮箱正常展示。
+5. 为一个账号解析并保存画像，刷新后确认数据仍存在。
+6. 用另一个账号发布项目，在“我的项目”中展开查看详情。
+7. 回到候选账号，在“匹配推荐”切换同校和跨校范围。
+8. 确认项目按总分排序，并显示三项进度条及解释。
+9. 在 Swagger 中测试意向接口和双向确认接口。
+10. 创建初始管理员，在管理员端验证登录、用户和项目查询。
+11. 收藏项目，确认“我的收藏”可以查看详情和取消收藏。
+12. 提交意见反馈，在管理端回复并确认用户收到通知。
+13. 在管理端下架项目，确认项目从发现和推荐中消失，再恢复项目。
+14. 分别以 `1440×900`、`1024×768` 和 `390×844` 检查登录页、首页、匹配推荐和管理控制台，确认没有文字重叠或横向滚动。
+15. 检查页面入场、匹配分析展开收起、按钮反馈、加载状态和系统减少动态效果模式。
 
 ## 当前边界与下一步
 
@@ -432,16 +495,16 @@ streamlit run admin_app.py --server.address 0.0.0.0 --server.port 8502
 
 - 普通用户 token 尚未应用到全部业务接口，部分接口仍依赖请求中的 `user_id/owner_id`
 - 旧版无密码用户没有自动迁移密码，需要补充设置或重置密码流程
-- 缺少找回密码、修改密码、令牌过期和撤销机制
+- 缺少找回密码、修改密码和“退出所有设备”等完整账号安全能力
 - 管理员 token 保存在进程内存中，服务重启后失效且多实例不能共享
 - 缺少取消意向和项目编辑；状态更新及删除已有后端接口但未接入前端
-- 当前 SQLite 加列逻辑是轻量迁移方案，正式版本应使用 Alembic
-- 缺少持续运行的系统化自动测试
+- 为兼容历史 SQLite 数据，`init_db()` 仍保留轻量补列逻辑；长期应统一由 Alembic 管理结构变更
+- 已具备邮箱验证安全测试和 Streamlit 核心流程回归测试，但覆盖范围尚未达到完整生产级别
 - AI 推荐存在非确定性，批量推荐的技能相关调用仍可能较慢
 - 时间只处理带小时单位的单一周投入表达
 - 匹配参数尚未用真实合作结果进行离线评估和校准
 - 缺少完整的隐私授权、敏感信息处理和操作审计
-- 管理员初始账号需要先通过环境变量和初始化脚本创建
+- `init_admin.py` 仍包含内置初始化凭据，尚未读取示例环境变量；正式部署前必须完成安全改造并轮换现有初始密码
 - 反馈、收藏和治理已完成基础版本，还可以继续增加分页、批量操作和更细的运营报表
 - Streamlit 页面切换仍以脚本重跑为基础，当前采用新页面淡入上移，不是 React 式连续转场
 

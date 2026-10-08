@@ -1,11 +1,19 @@
 import hashlib
+import hmac
+import os
 import re
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 import bcrypt
 import models
+from email_service import (
+    EmailConfigurationError,
+    EmailDeliveryError,
+    email_verification_enabled,
+    send_verification_email,
+)
 
 from fastapi import Depends, FastAPI, Header
 from fastapi.responses import JSONResponse
@@ -31,6 +39,8 @@ from models import (
     Project,
     ProjectProfile,
     User,
+    UserSession,
+    EmailVerification,
     UserProfile,
 )
 
@@ -68,6 +78,10 @@ class AuthRegisterRequest(BaseModel):
 class AuthLoginRequest(BaseModel):
     username: str
     password: str
+
+
+class EmailCodeRequest(BaseModel):
+    code: str
 
 
 class AdminLoginRequest(BaseModel):
@@ -208,6 +222,67 @@ def _verify_bcrypt_password(password: str, password_hash: str | None) -> bool:
         return False
 
 
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _email_code_hash(code: str) -> str:
+    pepper = os.getenv("EMAIL_CODE_PEPPER", "").strip()
+    if not pepper:
+        raise EmailConfigurationError("EMAIL_CODE_PEPPER is not configured")
+    return hmac.new(
+        pepper.encode("utf-8"), code.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+
+def _authenticated_user(
+    authorization: str | None,
+    db: Session,
+) -> tuple[User | None, JSONResponse | None]:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None, JSONResponse(status_code=401, content={"error": "authentication_required"})
+    token = authorization.removeprefix("Bearer ").strip()
+    session = db.scalar(
+        select(UserSession).where(
+            UserSession.token_hash == _token_hash(token),
+            UserSession.revoked_at.is_(None),
+            UserSession.expires_at > datetime.now(),
+        )
+    )
+    if session is None:
+        return None, JSONResponse(status_code=401, content={"error": "invalid_user_token"})
+    user = db.get(User, session.user_id)
+    if user is None or user.role != "user":
+        return None, JSONResponse(status_code=401, content={"error": "invalid_user_token"})
+    if user.is_banned:
+        return None, JSONResponse(
+            status_code=403,
+            content={"error": "account_banned", "reason": user.ban_reason or ""},
+        )
+    return user, None
+
+
+def _new_user_session(db: Session, user_id: int) -> str:
+    token = secrets.token_urlsafe(32)
+    db.add(
+        UserSession(
+            user_id=user_id,
+            token_hash=_token_hash(token),
+            expires_at=datetime.now() + timedelta(days=30),
+        )
+    )
+    return token
+
+
+def _masked_email(email: str) -> str:
+    local, _, domain = email.partition("@")
+    if len(local) <= 2:
+        masked_local = local[:1] + "*"
+    else:
+        masked_local = local[:2] + "***"
+    return f"{masked_local}@{domain}" if domain else "***"
+
+
 def _add_notification(
     db: Session,
     *,
@@ -236,7 +311,7 @@ def auth_register(
     db: Session = Depends(get_db),
 ):
     username = request.username.strip()
-    email = request.email.strip()
+    email = request.email.strip().lower()
     school = request.school.strip()
     major = request.major.strip()
     grade = request.grade.strip()
@@ -253,7 +328,11 @@ def auth_register(
             content={"error": "password_too_short"},
         )
 
-    if not username or not email or not request.password.strip():
+    if (
+        not username
+        or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email)
+        or not request.password.strip()
+    ):
         return JSONResponse(
             status_code=400,
             content={"error": "invalid_input"},
@@ -457,15 +536,33 @@ def auth_login(
             },
         )
 
-    token = str(uuid4())
+    token = _new_user_session(db, user.id)
+    db.commit()
     return {
         "status": "ok",
         "token": token,
         "user_id": user.id,
         "username": user.username,
         "email": user.email,
+        "email_verified": user.email_verified_at is not None,
         "school": user.school,
     }
+
+
+@app.post("/api/auth/logout")
+def auth_logout(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.removeprefix("Bearer ").strip()
+        session = db.scalar(
+            select(UserSession).where(UserSession.token_hash == _token_hash(token))
+        )
+        if session is not None:
+            session.revoked_at = datetime.now()
+            db.commit()
+    return {"success": True}
 
 
 @app.get("/api/account_status/{user_id}")
@@ -479,6 +576,169 @@ def account_status(user_id: int, db: Session = Depends(get_db)):
         "is_banned": bool(user.is_banned),
         "reason": user.ban_reason or "",
     }
+
+
+@app.get("/api/email/status")
+def email_status(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    user, error = _authenticated_user(authorization, db)
+    if error:
+        return error
+    latest = db.scalar(
+        select(EmailVerification)
+        .where(EmailVerification.user_id == user.id)
+        .order_by(EmailVerification.created_at.desc())
+    )
+    resend_after = 0
+    if latest:
+        interval_seconds = int(os.getenv("EMAIL_SEND_INTERVAL_SECONDS", "60"))
+        resend_after = max(
+            0,
+            int(
+                (
+                    latest.created_at
+                    + timedelta(seconds=interval_seconds)
+                    - datetime.now()
+                ).total_seconds()
+            ),
+        )
+    return {
+        "success": True,
+        "enabled": email_verification_enabled(),
+        "email": _masked_email(user.email),
+        "verified": user.email_verified_at is not None,
+        "verified_at": user.email_verified_at.isoformat() if user.email_verified_at else None,
+        "resend_after": resend_after,
+    }
+
+
+@app.post("/api/email/send_code")
+def send_email_code(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    user, error = _authenticated_user(authorization, db)
+    if error:
+        return error
+    if not email_verification_enabled():
+        return JSONResponse(status_code=503, content={"error": "email_verification_disabled"})
+    if user.email_verified_at is not None:
+        return JSONResponse(status_code=400, content={"error": "email_already_verified"})
+
+    now = datetime.now()
+    interval_seconds = int(os.getenv("EMAIL_SEND_INTERVAL_SECONDS", "60"))
+    latest = db.scalar(
+        select(EmailVerification)
+        .where(EmailVerification.user_id == user.id)
+        .order_by(EmailVerification.created_at.desc())
+    )
+    if latest and latest.created_at + timedelta(seconds=interval_seconds) > now:
+        seconds = int(
+            (latest.created_at + timedelta(seconds=interval_seconds) - now).total_seconds()
+        )
+        return JSONResponse(
+            status_code=429,
+            content={"error": "send_too_frequent", "resend_after": max(1, seconds)},
+        )
+    daily_count = db.scalar(
+        select(func.count(EmailVerification.id)).where(
+            EmailVerification.user_id == user.id,
+            EmailVerification.created_at >= now - timedelta(days=1),
+        )
+    ) or 0
+    email_daily_count = db.scalar(
+        select(func.count(EmailVerification.id)).where(
+            EmailVerification.email == user.email.lower(),
+            EmailVerification.created_at >= now - timedelta(days=1),
+        )
+    ) or 0
+    daily_limit = int(os.getenv("EMAIL_DAILY_LIMIT", "10"))
+    if daily_count >= daily_limit or email_daily_count >= daily_limit:
+        return JSONResponse(status_code=429, content={"error": "daily_limit_reached"})
+
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    expires_minutes = int(os.getenv("EMAIL_CODE_EXPIRE_MINUTES", "10"))
+    try:
+        code_hash = _email_code_hash(code)
+        send_verification_email(user.email, code, expires_minutes)
+        db.execute(
+            delete(EmailVerification).where(
+                EmailVerification.created_at < now - timedelta(days=7)
+            )
+        )
+        db.execute(
+            delete(EmailVerification).where(
+                EmailVerification.user_id == user.id,
+                EmailVerification.consumed_at.is_(None),
+            )
+        )
+        db.add(
+            EmailVerification(
+                user_id=user.id,
+                email=user.email.lower(),
+                code_hash=code_hash,
+                expires_at=now + timedelta(minutes=expires_minutes),
+            )
+        )
+        db.commit()
+    except EmailConfigurationError:
+        db.rollback()
+        return JSONResponse(status_code=503, content={"error": "email_verification_unavailable"})
+    except EmailDeliveryError:
+        db.rollback()
+        return JSONResponse(status_code=502, content={"error": "email_delivery_failed"})
+    return {
+        "success": True,
+        "expires_in": expires_minutes * 60,
+        "resend_after": interval_seconds,
+    }
+
+
+@app.post("/api/email/verify")
+def verify_email_code(
+    request: EmailCodeRequest,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    user, error = _authenticated_user(authorization, db)
+    if error:
+        return error
+    if user.email_verified_at is not None:
+        return {"success": True, "verified": True, "verified_at": user.email_verified_at.isoformat()}
+
+    verification = db.scalar(
+        select(EmailVerification)
+        .where(
+            EmailVerification.user_id == user.id,
+            EmailVerification.email == user.email.lower(),
+            EmailVerification.consumed_at.is_(None),
+        )
+        .order_by(EmailVerification.created_at.desc())
+    )
+    if verification is None:
+        return JSONResponse(status_code=400, content={"error": "code_expired"})
+    max_attempts = int(os.getenv("EMAIL_MAX_ATTEMPTS", "5"))
+    if verification.attempts >= max_attempts:
+        return JSONResponse(status_code=429, content={"error": "too_many_attempts"})
+    if verification.expires_at <= datetime.now():
+        verification.consumed_at = datetime.now()
+        db.commit()
+        return JSONResponse(status_code=400, content={"error": "code_expired"})
+    try:
+        valid = secrets.compare_digest(verification.code_hash, _email_code_hash(request.code.strip()))
+    except EmailConfigurationError:
+        return JSONResponse(status_code=503, content={"error": "email_verification_unavailable"})
+    if not valid:
+        verification.attempts += 1
+        db.commit()
+        return JSONResponse(status_code=400, content={"error": "invalid_code", "remaining_attempts": max_attempts - verification.attempts})
+    now = datetime.now()
+    verification.consumed_at = now
+    user.email_verified_at = now
+    db.commit()
+    return {"success": True, "verified": True, "verified_at": now.isoformat()}
 
 
 @app.post("/api/admin/login")
@@ -1108,6 +1368,8 @@ def admin_delete_user(
             delete(FavoriteProject).where(FavoriteProject.user_id == user_id)
         )
         db.execute(delete(Feedback).where(Feedback.user_id == user_id))
+        db.execute(delete(EmailVerification).where(EmailVerification.user_id == user_id))
+        db.execute(delete(UserSession).where(UserSession.user_id == user_id))
         db.execute(delete(MatchRecord).where(MatchRecord.user_id == user_id))
         db.execute(delete(OwnerInterest).where(OwnerInterest.user_id == user_id))
         db.execute(delete(Project).where(Project.owner_id == user_id))
@@ -1206,6 +1468,9 @@ def admin_ban_user(
         user.is_banned = True
         user.banned_at = datetime.now()
         user.ban_reason = request.reason.strip()[:255] or None
+        db.execute(
+            delete(UserSession).where(UserSession.user_id == user_id)
+        )
         projects = db.scalars(
             select(Project).where(Project.owner_id == user_id)
         ).all()
@@ -2109,10 +2374,12 @@ def get_my_matches(user_id: int, db: Session = Depends(get_db)):
 
 
 def _contact_payload(user: User, profile: UserProfile | None) -> dict:
+    email_verified = user.email_verified_at is not None
     payload = {
         "user_id": user.id,
         "username": user.username,
-        "email": user.email,
+        "email": user.email if email_verified else "",
+        "email_verified": email_verified,
         "contact_method": "",
         "contact_value": "",
     }

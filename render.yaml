@@ -15,3 +15,21 @@ services:
         sync: false
       - key: LLM_MODEL
         value: qwen-plus
+      - key: EMAIL_VERIFICATION_ENABLED
+        value: "false"
+      - key: EMAIL_PROVIDER
+        value: resend
+      - key: EMAIL_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: EMAIL_CODE_PEPPER
+        sync: false
+      - key: EMAIL_CODE_EXPIRE_MINUTES
+        value: "10"
+      - key: EMAIL_SEND_INTERVAL_SECONDS
+        value: "60"
+      - key: EMAIL_DAILY_LIMIT
+        value: "10"
+      - key: EMAIL_MAX_ATTEMPTS
+        value: "5"
