@@ -1,6 +1,50 @@
 import streamlit as st
 
+from api_client import api_request
 from ui import inject_theme, render_brand_lockup
+
+
+def _extract_pending_admin_count(result: object) -> int | None:
+    if isinstance(result, list):
+        admins = result
+    elif isinstance(result, dict):
+        admins = next(
+            (
+                value
+                for key, value in (
+                    ("data", result.get("data")),
+                    ("admins", result.get("admins")),
+                    ("items", result.get("items")),
+                    ("results", result.get("results")),
+                )
+                if isinstance(value, list)
+            ),
+            None,
+        )
+        if admins is None:
+            return None
+    else:
+        return None
+
+    return sum(
+        1
+        for admin in admins
+        if isinstance(admin, dict)
+        and admin.get("admin_status", admin.get("status", "pending"))
+        == "pending"
+    )
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _load_pending_admin_count(token: str) -> int | None:
+    result = api_request(
+        "GET",
+        "/api/admin/review/list",
+        token=token,
+        success_message="",
+        show_success=False,
+    )
+    return _extract_pending_admin_count(result)
 
 
 st.set_page_config(
@@ -20,6 +64,15 @@ with st.sidebar:
 
 
 if st.session_state.get("admin_token"):
+    pending_admin_count = _load_pending_admin_count(
+        st.session_state["admin_token"]
+    )
+    review_title = (
+        f"管理员审核 ({pending_admin_count})"
+        if pending_admin_count
+        else "管理员审核"
+    )
+
     # Keep auth pages registered but hidden so a login redirect can resolve
     # after the session state changes without a PageNotFoundError.
     pages = [
@@ -53,7 +106,7 @@ if st.session_state.get("admin_token"):
         ),
         st.Page(
             "admin_review.py",
-            title="管理员审核",
+            title=review_title,
             icon=":material/rate_review:",
         ),
         st.Page(

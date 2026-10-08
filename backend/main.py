@@ -35,7 +35,7 @@ from models import (
 )
 
 app = FastAPI()
-ADMIN_TOKENS: set[str] = set()
+ADMIN_TOKENS: dict[str, int] = {}
 
 
 @app.on_event("startup")
@@ -72,15 +72,14 @@ class AuthLoginRequest(BaseModel):
 
 class AdminLoginRequest(BaseModel):
     admin_name: str
-    admin_password: str
-    user_password: str
+    password: str
 
 
 class AdminRegisterRequest(BaseModel):
     admin_name: str
-    admin_password: str
-    confirm_admin_password: str
-    user_password: str
+    email: str
+    password: str
+    confirm_password: str
 
 
 class AdminReviewActionRequest(BaseModel):
@@ -152,6 +151,10 @@ class FeedbackReplyRequest(BaseModel):
 
 class AdminProjectModerationRequest(BaseModel):
     action: str
+    reason: str = ""
+
+
+class AdminBanUserRequest(BaseModel):
     reason: str = ""
 
 
@@ -306,54 +309,118 @@ def admin_register(
     db: Session = Depends(get_db),
 ):
     admin_name = request.admin_name.strip()
+    email = request.email.strip()
     if not admin_name or len(admin_name) > 100:
         return JSONResponse(
             status_code=400,
             content={"error": "invalid_admin_name"},
         )
-    if request.admin_password != request.confirm_admin_password:
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_email"},
+        )
+    if request.password != request.confirm_password:
         return JSONResponse(
             status_code=400,
             content={"error": "password_mismatch"},
         )
-    if len(request.admin_password) < 8 or len(request.user_password) < 8:
+    if len(request.password) < 8:
         return JSONResponse(
             status_code=400,
             content={"error": "password_too_short"},
         )
 
-    existing = db.scalar(
-        select(User).where(
+    name_matches = db.scalars(
+        select(User)
+        .where(
             (User.admin_name == admin_name) | (User.username == admin_name)
         )
-    )
-    if existing:
+        .order_by(User.created_at.desc())
+    ).all()
+    reusable_admin = None
+    for existing in name_matches:
+        if existing.role != "admin":
+            return JSONResponse(
+                status_code=400,
+                content={"error": "admin_name_exists"},
+            )
+        if existing.admin_status in {"pending", "approved"}:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "admin_name_exists"},
+            )
+        if existing.admin_status == "rejected" and reusable_admin is None:
+            reusable_admin = existing
+
+    email_matches = db.scalars(
+        select(User).where(User.email == email)
+    ).all()
+    rejected_email_admin = None
+    for existing in email_matches:
+        if reusable_admin is not None and existing.id == reusable_admin.id:
+            continue
+        if (
+            existing.role != "admin"
+            or existing.admin_status in {"pending", "approved"}
+        ):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "email_exists"},
+            )
+        if existing.admin_status == "rejected":
+            rejected_email_admin = existing
+
+    if reusable_admin is None:
+        reusable_admin = rejected_email_admin
+    elif (
+        rejected_email_admin is not None
+        and rejected_email_admin.id != reusable_admin.id
+    ):
         return JSONResponse(
             status_code=400,
-            content={"error": "admin_name_exists"},
+            content={"error": "email_exists"},
         )
 
-    admin = User(
-        admin_name=admin_name,
-        username=admin_name,
-        email=f"admin-{uuid4().hex}@local.invalid",
-        admin_password_hash=bcrypt.hashpw(
-            request.admin_password.encode("utf-8"), bcrypt.gensalt()
-        ).decode("utf-8"),
-        user_password_hash=bcrypt.hashpw(
-            request.user_password.encode("utf-8"), bcrypt.gensalt()
-        ).decode("utf-8"),
-        role="admin",
-        admin_status="pending",
-    )
+    password_hash = bcrypt.hashpw(
+        request.password.encode("utf-8"), bcrypt.gensalt()
+    ).decode("utf-8")
+    if reusable_admin is not None:
+        reusable_admin.admin_name = admin_name
+        reusable_admin.username = admin_name
+        reusable_admin.email = email
+        reusable_admin.admin_password_hash = password_hash
+        reusable_admin.admin_status = "pending"
+        reusable_admin.is_banned = False
+        reusable_admin.banned_at = None
+        reusable_admin.ban_reason = None
+        reusable_admin.created_at = datetime.now()
+        admin = reusable_admin
+    else:
+        admin = User(
+            admin_name=admin_name,
+            username=admin_name,
+            email=email,
+            admin_password_hash=password_hash,
+            user_password_hash=None,
+            role="admin",
+            admin_status="pending",
+        )
     try:
         db.add(admin)
         db.commit()
     except IntegrityError:
         db.rollback()
+        name_exists = db.scalar(
+            select(User).where(
+                (User.admin_name == admin_name) | (User.username == admin_name)
+            )
+        )
         return JSONResponse(
             status_code=400,
-            content={"error": "admin_name_exists"},
+            content={
+                "error": "admin_name_exists" if name_exists else "email_exists"
+            },
         )
     except SQLAlchemyError:
         db.rollback()
@@ -381,6 +448,15 @@ def auth_login(
             content={"error": "invalid_password"},
         )
 
+    if user.is_banned:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": "account_banned",
+                "reason": user.ban_reason or "",
+            },
+        )
+
     token = str(uuid4())
     return {
         "status": "ok",
@@ -400,31 +476,32 @@ def admin_login(
     admin_name = request.admin_name.strip()
     admin = db.scalar(
         select(User).where(
-            (User.admin_name == admin_name) | (User.username == admin_name)
+            User.admin_name == admin_name,
+            User.role == "admin",
         )
     )
-    if not admin or admin.role != "admin":
+    if not admin:
         return JSONResponse(
             status_code=400,
             content={"error": "admin_not_found"},
         )
 
     if not _verify_bcrypt_password(
-        request.admin_password,
+        request.password,
         admin.admin_password_hash,
     ):
         return JSONResponse(
             status_code=400,
-            content={"error": "invalid_admin_password"},
+            content={"error": "invalid_password"},
         )
 
-    if not _verify_bcrypt_password(
-        request.user_password,
-        admin.user_password_hash,
-    ):
+    if admin.is_banned:
         return JSONResponse(
-            status_code=400,
-            content={"error": "invalid_user_password"},
+            status_code=403,
+            content={
+                "error": "account_banned",
+                "reason": admin.ban_reason or "",
+            },
         )
 
     if admin.admin_status != "approved":
@@ -434,7 +511,7 @@ def admin_login(
         )
 
     token = str(uuid4())
-    ADMIN_TOKENS.add(token)
+    ADMIN_TOKENS[token] = admin.id
     return {
         "status": "ok",
         "token": token,
@@ -454,6 +531,13 @@ def _require_admin_token(authorization: str | None) -> str | None:
     return None
 
 
+def _admin_user_id(authorization: str | None) -> int | None:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization.removeprefix("Bearer ").strip()
+    return ADMIN_TOKENS.get(token)
+
+
 def _admin_auth_response(authorization: str | None) -> JSONResponse | None:
     error = _require_admin_token(authorization)
     if error:
@@ -467,6 +551,7 @@ def _server_error() -> JSONResponse:
 
 def _serialize_user(user: User) -> dict:
     return {
+        "id": user.id,
         "username": user.username,
         "email": user.email,
         "school": user.school,
@@ -474,6 +559,9 @@ def _serialize_user(user: User) -> dict:
         "grade": user.grade,
         "role": user.role,
         "created_at": user.created_at.isoformat(),
+        "is_banned": user.is_banned,
+        "banned_at": user.banned_at.isoformat() if user.banned_at else None,
+        "ban_reason": user.ban_reason or "",
     }
 
 
@@ -487,7 +575,11 @@ def admin_users(
         return auth_error
 
     try:
-        users = db.scalars(select(User).order_by(User.created_at.desc())).all()
+        users = db.scalars(
+            select(User)
+            .where(User.role == "user")
+            .order_by(User.created_at.desc())
+        ).all()
         return [_serialize_user(user) for user in users]
     except Exception:
         return _server_error()
@@ -590,7 +682,7 @@ def admin_users_search(
         return auth_error
 
     try:
-        conditions = []
+        conditions = [User.role == "user"]
         if username.strip():
             conditions.append(User.username.ilike(f"%{username.strip()}%"))
         if school.strip():
@@ -922,6 +1014,191 @@ def admin_competition_detail(
             )
         return _serialize_competition(project)
     except Exception:
+        return _server_error()
+
+
+# [TEST-ONLY] 硬删除用户，正式版需移除。
+@app.delete("/api/admin/users/{user_id}")
+def admin_delete_user(
+    user_id: int,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+
+    if _admin_user_id(authorization) == user_id:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "cannot_delete_self"},
+        )
+
+    try:
+        user = db.get(User, user_id)
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "user_not_found"},
+            )
+
+        project_ids = list(
+            db.scalars(
+                select(Project.id).where(Project.owner_id == user_id)
+            ).all()
+        )
+        project_count = len(project_ids)
+
+        if project_ids:
+            db.execute(
+                delete(ProjectProfile).where(
+                    ProjectProfile.project_id.in_(project_ids)
+                )
+            )
+            db.execute(
+                delete(MatchRecord).where(
+                    MatchRecord.project_id.in_(project_ids)
+                )
+            )
+            db.execute(
+                delete(OwnerInterest).where(
+                    OwnerInterest.project_id.in_(project_ids)
+                )
+            )
+            db.execute(
+                delete(FavoriteProject).where(
+                    FavoriteProject.project_id.in_(project_ids)
+                )
+            )
+
+        db.execute(delete(UserProfile).where(UserProfile.user_id == user_id))
+        db.execute(delete(Notification).where(Notification.user_id == user_id))
+        db.execute(
+            delete(FavoriteProject).where(FavoriteProject.user_id == user_id)
+        )
+        db.execute(delete(Feedback).where(Feedback.user_id == user_id))
+        db.execute(delete(MatchRecord).where(MatchRecord.user_id == user_id))
+        db.execute(delete(OwnerInterest).where(OwnerInterest.user_id == user_id))
+        db.execute(delete(Project).where(Project.owner_id == user_id))
+        db.execute(delete(User).where(User.id == user_id))
+        db.commit()
+        return {
+            "success": True,
+            "deleted_user": user.username,
+            "deleted_projects": project_count,
+        }
+    except SQLAlchemyError:
+        db.rollback()
+        return _server_error()
+
+
+# [TEST-ONLY] 硬删除竞赛，正式版需移除。
+@app.delete("/api/admin/competitions/{project_id}")
+def admin_delete_competition(
+    project_id: int,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+
+    try:
+        project = db.get(Project, project_id)
+        if project is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "competition_not_found"},
+            )
+
+        project_name = project.name
+        db.execute(
+            delete(ProjectProfile).where(ProjectProfile.project_id == project_id)
+        )
+        db.execute(
+            delete(MatchRecord).where(MatchRecord.project_id == project_id)
+        )
+        db.execute(
+            delete(OwnerInterest).where(OwnerInterest.project_id == project_id)
+        )
+        db.execute(
+            delete(FavoriteProject).where(
+                FavoriteProject.project_id == project_id
+            )
+        )
+        db.execute(delete(Project).where(Project.id == project_id))
+        db.commit()
+        return {
+            "success": True,
+            "deleted_project": project_name,
+        }
+    except SQLAlchemyError:
+        db.rollback()
+        return _server_error()
+
+
+@app.post("/api/admin/users/{user_id}/ban")
+def admin_ban_user(
+    user_id: int,
+    request: AdminBanUserRequest,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+
+    try:
+        user = db.get(User, user_id)
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "user_not_found"},
+            )
+
+        user.is_banned = True
+        user.banned_at = datetime.now()
+        user.ban_reason = request.reason.strip()[:255] or None
+        projects = db.scalars(
+            select(Project).where(Project.owner_id == user_id)
+        ).all()
+        for project in projects:
+            project.status = "closed"
+        db.commit()
+        return {
+            "success": True,
+            "closed_projects": len(projects),
+        }
+    except SQLAlchemyError:
+        db.rollback()
+        return _server_error()
+
+
+@app.post("/api/admin/users/{user_id}/unban")
+def admin_unban_user(
+    user_id: int,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    auth_error = _admin_auth_response(authorization)
+    if auth_error:
+        return auth_error
+
+    try:
+        user = db.get(User, user_id)
+        if user is None:
+            return JSONResponse(
+                status_code=404,
+                content={"error": "user_not_found"},
+            )
+
+        user.is_banned = False
+        user.banned_at = None
+        user.ban_reason = None
+        db.commit()
+        return {"success": True}
+    except SQLAlchemyError:
+        db.rollback()
         return _server_error()
 
 

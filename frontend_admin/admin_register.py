@@ -4,10 +4,12 @@ from api_client import api_request
 from ui import render_brand_lockup
 
 REGISTER_ERROR_MESSAGES = {
-    "admin_name_exists": "管理员名称已存在",
+    "admin_name_exists": "管理员名称已被使用",
     "invalid_admin_name": "管理员名称不合法",
-    "password_mismatch": "两次输入的管理员密码不一致",
-    "password_too_short": "管理员密码和用户操作密码均须至少8位",
+    "invalid_email": "邮箱格式不正确",
+    "password_mismatch": "两次密码不一致",
+    "password_too_short": "密码至少 8 位",
+    "email_exists": "该邮箱已被注册",
 }
 
 
@@ -39,46 +41,55 @@ with form_column:
         )
         with st.form("admin_register_form"):
             admin_name = st.text_input("管理员名称")
+            email = st.text_input(
+                "邮箱",
+                help="用于接收审核结果通知",
+            )
             password_left, password_right = st.columns(2)
             with password_left:
-                admin_password = st.text_input("管理员密码", type="password")
+                password = st.text_input(
+                    "密码",
+                    type="password",
+                    help="至少 8 位",
+                )
             with password_right:
-                confirm_admin_password = st.text_input("确认管理员密码", type="password")
-            user_password = st.text_input(
-                "用户操作密码",
-                type="password",
-                help="用于管理员操作用户数据时的身份验证，并非普通用户的登录密码",
-            )
+                confirm_password = st.text_input(
+                    "确认密码",
+                    type="password",
+                )
             submitted = st.form_submit_button(
                 "提交注册申请",
                 type="primary",
                 icon=":material/send:",
                 use_container_width=True,
             )
-        st.page_link(
-            "admin_login.py",
-            label="返回管理员登录",
-            icon=":material/arrow_back:",
-        )
 
 if submitted:
-    if not all(
-        [admin_name.strip(), admin_password, confirm_admin_password, user_password]
-    ):
+    if not all([admin_name.strip(), email.strip(), password, confirm_password]):
         st.warning("请填写完整的注册信息")
-    elif admin_password != confirm_admin_password:
-        st.error("两次输入的管理员密码不一致")
+    elif "@" not in email or "." not in email.split("@", 1)[-1]:
+        st.error("邮箱格式不正确")
+    elif password != confirm_password:
+        st.error("两次密码不一致")
     else:
         with st.spinner("正在提交管理员申请..."):
-            api_request(
+            result = api_request(
                 "POST",
                 "/api/admin/register",
                 json={
                     "admin_name": admin_name.strip(),
-                    "admin_password": admin_password,
-                    "confirm_admin_password": confirm_admin_password,
-                    "user_password": user_password,
+                    "email": email.strip(),
+                    "password": password,
+                    "confirm_password": confirm_password,
                 },
                 success_message="注册申请已提交，请等待审核",
                 error_messages=REGISTER_ERROR_MESSAGES,
+                show_success=False,
+            )
+        if result is not None:
+            st.success("注册申请已提交，请等待审核")
+            st.page_link(
+                "admin_login.py",
+                label="返回登录",
+                icon=":material/arrow_back:",
             )

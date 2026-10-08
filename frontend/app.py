@@ -78,6 +78,14 @@ def post_api(
             )
         except (AttributeError, ValueError):
             error_code = "request_failed"
+        if error_code == "account_banned":
+            reason = ""
+            if isinstance(error_data, dict):
+                reason = str(error_data.get("reason") or "未说明")
+            st.error(
+                f"账号已被封禁，原因：{reason}。如有疑问请联系管理员。"
+            )
+            return None
         if error_messages and error_code in error_messages:
             message = error_messages[error_code]
         else:
