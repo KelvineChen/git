@@ -1132,7 +1132,28 @@ def show_auth_page() -> None:
                                 },
                             )
                         if result:
-                            show_success("注册成功，请登录")
+                            with st.spinner("账号已创建，正在进入邮箱验证..."):
+                                login_result = post_api(
+                                    "/api/auth/login",
+                                    {"username": username.strip(), "password": password},
+                                    error_messages={
+                                        "user_not_found": "账号已创建，请使用用户名登录",
+                                        "invalid_password": "账号已创建，请使用刚才设置的密码登录",
+                                    },
+                                )
+                            if login_result and login_result.get("token"):
+                                set_current_user(
+                                    login_result["user_id"],
+                                    login_result["username"],
+                                    login_result.get("school"),
+                                    login_result["token"],
+                                    login_result.get("email"),
+                                )
+                                st.session_state["email_verification_onboarding"] = True
+                                queue_success("注册成功，请验证邮箱")
+                                st.rerun()
+                            else:
+                                show_success("注册成功，请登录后验证邮箱")
             else:
                 st.markdown(
                     '<div class="zl-auth-panel-head"><h2>欢迎回来</h2>'
@@ -1183,6 +1204,173 @@ def show_auth_page() -> None:
                 '<div class="zl-auth-foot">登录即表示你同意遵守平台科研协作规范</div>',
                 unsafe_allow_html=True,
             )
+
+
+def render_email_verification_panel(user_id: int, *, context: str = "profile") -> bool:
+    """Render the reusable email verification flow and return its current status."""
+    token = st.session_state.get("token")
+    email_status_key = f"email_status_{user_id}"
+    if token and email_status_key not in st.session_state:
+        with st.spinner("正在检查邮箱状态..."):
+            status_result = get_api(
+                "/api/email/status",
+                token=token,
+                show_error=False,
+            )
+        if status_result and status_result.get("success"):
+            st.session_state[email_status_key] = status_result
+            st.session_state["email_resend_available_at"] = (
+                time.time() + int(status_result.get("resend_after") or 0)
+            )
+
+    email_status = st.session_state.get(email_status_key) or {}
+    verified = bool(email_status.get("verified"))
+    suffix = "onboarding" if context == "onboarding" else "profile"
+    with st.container(border=True):
+        email_column, action_column = st.columns([3, 1], vertical_alignment="center")
+        with email_column:
+            st.markdown("**账号邮箱验证**")
+            st.caption(
+                email_status.get("email")
+                or st.session_state.get("email")
+                or "当前邮箱"
+            )
+            if not email_status.get("enabled", True):
+                st.info("邮箱验证服务暂未启用，你可以先进入平台，稍后再完成验证。")
+            elif verified:
+                st.success("邮箱已验证，可在双方互选成功后展示。")
+            else:
+                st.warning("邮箱尚未验证。发送验证码后，在下方输入邮件中的 6 位数字。")
+        with action_column:
+            resend_after = max(
+                0,
+                int(st.session_state.get("email_resend_available_at", 0) - time.time()),
+            )
+            send_disabled = bool(
+                verified
+                or not email_status.get("enabled", True)
+                or resend_after > 0
+                or not token
+            )
+            send_label = f"{resend_after} 秒后重发" if resend_after > 0 else "发送验证码"
+            if st.button(
+                send_label,
+                key=f"send_email_code_{suffix}",
+                icon=":material/outgoing_mail:",
+                disabled=send_disabled,
+                use_container_width=True,
+            ):
+                with st.spinner("正在发送验证码..."):
+                    result = post_api(
+                        "/api/email/send_code",
+                        {},
+                        token=token,
+                        error_messages={
+                            "email_verification_disabled": "邮箱验证功能暂未开放",
+                            "email_verification_unavailable": "邮箱服务配置尚未完成",
+                            "email_delivery_failed": "邮件发送失败，请稍后重试",
+                            "send_too_frequent": "发送过于频繁，请稍后重试",
+                            "daily_limit_reached": "今日发送次数已达上限",
+                            "email_already_verified": "邮箱已经验证",
+                        },
+                    )
+                if result:
+                    st.session_state["email_code_sent"] = True
+                    st.session_state["email_resend_available_at"] = (
+                        time.time() + int(result.get("resend_after") or 60)
+                    )
+                    st.session_state.pop(email_status_key, None)
+                    queue_success("验证码已发送，请检查收件箱和垃圾箱")
+                    st.rerun()
+            if resend_after > 0 and st.button(
+                "刷新发送状态",
+                key=f"refresh_email_resend_{suffix}",
+                icon=":material/refresh:",
+                use_container_width=True,
+            ):
+                st.session_state.pop(email_status_key, None)
+                st.rerun()
+
+        if st.session_state.get("email_code_sent") and not verified:
+            code_column, verify_column = st.columns([3, 1], vertical_alignment="bottom")
+            with code_column:
+                verification_code = st.text_input(
+                    "6 位邮箱验证码",
+                    key=f"email_verification_code_{suffix}",
+                    max_chars=6,
+                    placeholder="请输入邮件中的验证码",
+                )
+            with verify_column:
+                if st.button(
+                    "完成验证",
+                    key=f"verify_email_code_{suffix}",
+                    type="primary",
+                    icon=":material/verified:",
+                    use_container_width=True,
+                ):
+                    if not re.fullmatch(r"\d{6}", verification_code.strip()):
+                        st.error("请输入 6 位数字验证码")
+                    else:
+                        with st.spinner("正在验证邮箱..."):
+                            result = post_api(
+                                "/api/email/verify",
+                                {"code": verification_code.strip()},
+                                token=token,
+                                error_messages={
+                                    "invalid_code": "验证码错误或已失效",
+                                    "code_expired": "验证码已过期，请重新发送",
+                                    "too_many_attempts": "尝试次数过多，请重新发送验证码",
+                                    "email_verification_unavailable": "邮箱验证服务暂不可用",
+                                },
+                            )
+                        if result:
+                            st.session_state.pop("email_code_sent", None)
+                            st.session_state.pop(
+                                f"email_verification_code_{suffix}", None
+                            )
+                            st.session_state.pop(email_status_key, None)
+                            if context == "onboarding":
+                                st.session_state.pop(
+                                    "email_verification_onboarding", None
+                                )
+                                navigate_to("首页")
+                            queue_success("邮箱验证成功")
+                            st.rerun()
+    return verified
+
+
+def show_email_verification_onboarding() -> None:
+    show_queued_success()
+    render_page_heading(
+        "验证注册邮箱",
+        "完成邮箱验证后，双方达成互选时才能可靠地交换账号邮箱。",
+    )
+    user_id = st.session_state["user_id"]
+    if render_email_verification_panel(user_id, context="onboarding"):
+        st.session_state.pop("email_verification_onboarding", None)
+        navigate_to("首页")
+        st.rerun()
+
+    st.caption("暂时跳过不会影响画像和项目功能，你可以稍后在“我的画像”中继续验证。")
+    continue_column, logout_column = st.columns([3, 1])
+    with continue_column:
+        if st.button(
+            "稍后验证，进入平台",
+            key="skip_email_verification",
+            use_container_width=True,
+        ):
+            st.session_state.pop("email_verification_onboarding", None)
+            navigate_to("首页")
+            st.rerun()
+    with logout_column:
+        if st.button(
+            "退出登录",
+            key="onboarding_logout",
+            icon=":material/logout:",
+            use_container_width=True,
+        ):
+            st.session_state.clear()
+            st.rerun()
 
 
 def show_profile_page() -> None:
@@ -1282,121 +1470,7 @@ def show_profile_page() -> None:
     st.caption(
         "通过验证的账号邮箱只会在双方互选成功后向对方展示。你还可以选择开放一种额外联系方式。"
     )
-    token = st.session_state.get("token")
-    email_status_key = f"email_status_{user_id}"
-    if token and email_status_key not in st.session_state:
-        with st.spinner("正在检查邮箱状态..."):
-            status_result = get_api(
-                "/api/email/status",
-                token=token,
-                show_error=False,
-            )
-        if status_result and status_result.get("success"):
-            st.session_state[email_status_key] = status_result
-            st.session_state["email_resend_available_at"] = (
-                time.time() + int(status_result.get("resend_after") or 0)
-            )
-
-    email_status = st.session_state.get(email_status_key) or {}
-    with st.container(border=True):
-        email_column, action_column = st.columns([3, 1], vertical_alignment="center")
-        with email_column:
-            st.markdown("**账号邮箱验证**")
-            st.caption(email_status.get("email") or st.session_state.get("email") or "当前邮箱")
-            if not email_status.get("enabled", True):
-                st.info("邮箱验证服务暂未启用，启用后可在此完成验证。")
-            elif email_status.get("verified"):
-                st.success("邮箱已验证，可在双方互选成功后展示。")
-            else:
-                st.warning("邮箱尚未验证，双方匹配后不会展示邮箱地址。")
-        with action_column:
-            resend_after = max(
-                0,
-                int(st.session_state.get("email_resend_available_at", 0) - time.time()),
-            )
-            send_disabled = bool(
-                email_status.get("verified")
-                or not email_status.get("enabled", True)
-                or resend_after > 0
-                or not token
-            )
-            send_label = f"{resend_after} 秒后重发" if resend_after > 0 else "发送验证码"
-            if st.button(
-                send_label,
-                key="send_email_code",
-                icon=":material/outgoing_mail:",
-                disabled=send_disabled,
-                use_container_width=True,
-            ):
-                with st.spinner("正在发送验证码..."):
-                    result = post_api(
-                        "/api/email/send_code",
-                        {},
-                        token=token,
-                        error_messages={
-                            "email_verification_disabled": "邮箱验证功能暂未开放",
-                            "email_verification_unavailable": "邮箱服务配置尚未完成",
-                            "email_delivery_failed": "邮件发送失败，请稍后重试",
-                            "send_too_frequent": "发送过于频繁，请稍后重试",
-                            "daily_limit_reached": "今日发送次数已达上限",
-                            "email_already_verified": "邮箱已经验证",
-                        },
-                    )
-                if result:
-                    st.session_state["email_code_sent"] = True
-                    st.session_state["email_resend_available_at"] = (
-                        time.time() + int(result.get("resend_after") or 60)
-                    )
-                    st.session_state.pop(email_status_key, None)
-                    queue_success("验证码已发送，请检查收件箱和垃圾箱")
-                    st.rerun()
-            if resend_after > 0 and st.button(
-                "刷新发送状态",
-                key="refresh_email_resend",
-                icon=":material/refresh:",
-                use_container_width=True,
-            ):
-                st.session_state.pop(email_status_key, None)
-                st.rerun()
-
-        if st.session_state.get("email_code_sent") and not email_status.get("verified"):
-            code_column, verify_column = st.columns([3, 1], vertical_alignment="bottom")
-            with code_column:
-                verification_code = st.text_input(
-                    "6 位邮箱验证码",
-                    key="email_verification_code",
-                    max_chars=6,
-                    placeholder="请输入邮件中的验证码",
-                )
-            with verify_column:
-                if st.button(
-                    "完成验证",
-                    key="verify_email_code",
-                    type="primary",
-                    icon=":material/verified:",
-                    use_container_width=True,
-                ):
-                    if not re.fullmatch(r"\d{6}", verification_code.strip()):
-                        st.error("请输入 6 位数字验证码")
-                    else:
-                        with st.spinner("正在验证邮箱..."):
-                            result = post_api(
-                                "/api/email/verify",
-                                {"code": verification_code.strip()},
-                                token=token,
-                                error_messages={
-                                    "invalid_code": "验证码错误或已失效",
-                                    "code_expired": "验证码已过期，请重新发送",
-                                    "too_many_attempts": "尝试次数过多，请重新发送验证码",
-                                    "email_verification_unavailable": "邮箱验证服务暂不可用",
-                                },
-                            )
-                        if result:
-                            st.session_state.pop("email_code_sent", None)
-                            st.session_state.pop("email_verification_code", None)
-                            st.session_state.pop(email_status_key, None)
-                            queue_success("邮箱验证成功")
-                            st.rerun()
+    render_email_verification_panel(user_id)
 
     contact_labels = {
         "": "不填写",
@@ -1908,6 +1982,10 @@ def show_feedback_page() -> None:
 
 
 def show_authenticated_app() -> None:
+    if st.session_state.get("email_verification_onboarding"):
+        show_email_verification_onboarding()
+        return
+
     show_queued_success()
     notification_summary = get_api(
         f"/api/notifications/{st.session_state['user_id']}?unread_only=true&page_size=1",

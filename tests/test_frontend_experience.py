@@ -54,6 +54,61 @@ class FrontendExperienceTests(unittest.TestCase):
     def assert_clean(self, app):
         self.assertFalse(app.exception, str(app.exception))
 
+    def test_registration_enters_email_verification_flow(self):
+        def post(url, **kwargs):
+            if url.endswith("/api/auth/register"):
+                return response({"status": "ok"})
+            if url.endswith("/api/auth/login"):
+                return response({
+                    "status": "ok", "token": "new-user-token", "user_id": 7,
+                    "username": "new-user", "email": "new@example.com",
+                    "school": "测试大学",
+                })
+            if url.endswith("/api/email/send_code"):
+                return response({"success": True, "resend_after": 60})
+            return response({"success": True})
+
+        def get(url, **kwargs):
+            if url.endswith("/api/email/status"):
+                return response({
+                    "success": True, "enabled": True, "verified": False,
+                    "email": "ne***@example.com", "resend_after": 0,
+                })
+            return user_get(url, **kwargs)
+
+        with patch("requests.post", side_effect=post), patch(
+            "requests.get", side_effect=get
+        ):
+            app = AppTest.from_file(str(APP), default_timeout=20).run()
+            next(
+                item for item in app.segmented_control if item.label == "账户入口"
+            ).set_value("注册").run()
+            next(item for item in app.text_input if item.label == "用户名").set_value(
+                "new-user"
+            ).run()
+            next(item for item in app.text_input if item.label == "邮箱").set_value(
+                "new@example.com"
+            ).run()
+            password_inputs = [item for item in app.text_input if "密码" in item.label]
+            password_inputs[0].set_value("StrongPass123").run()
+            password_inputs[1].set_value("StrongPass123").run()
+            next(item for item in app.button if item.label == "创建账号").click().run()
+
+        self.assert_clean(app)
+        self.assertEqual(app.session_state["user_id"], 7)
+        self.assertTrue(app.session_state["email_verification_onboarding"])
+        self.assertTrue(any(item.label == "发送验证码" for item in app.button))
+        self.assertTrue(any(item.label == "稍后验证，进入平台" for item in app.button))
+
+        with patch("requests.post", side_effect=post), patch(
+            "requests.get", side_effect=get
+        ):
+            next(item for item in app.button if item.label == "发送验证码").click().run()
+        self.assert_clean(app)
+        self.assertTrue(
+            any(item.label == "6 位邮箱验证码" for item in app.text_input)
+        )
+
     @patch("requests.get", side_effect=user_get)
     def test_skill_edit_add_remove_and_save(self, get):
         app = user_app()
