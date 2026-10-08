@@ -101,6 +101,7 @@ else:
                     with st.spinner("正在提交审核结果..."):
                         reviewed = _review_admin(admin_token, admin_name, "approve")
                     if reviewed:
+                        st.cache_data.clear()
                         st.rerun()
 
                 if st.button(
@@ -112,6 +113,7 @@ else:
                     with st.spinner("正在提交审核结果..."):
                         reviewed = _review_admin(admin_token, admin_name, "reject")
                     if reviewed:
+                        st.cache_data.clear()
                         st.rerun()
 
 st.divider()

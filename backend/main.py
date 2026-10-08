@@ -72,15 +72,14 @@ class AuthLoginRequest(BaseModel):
 
 class AdminLoginRequest(BaseModel):
     admin_name: str
-    admin_password: str
-    user_password: str
+    password: str
 
 
 class AdminRegisterRequest(BaseModel):
     admin_name: str
-    admin_password: str
-    confirm_admin_password: str
-    user_password: str
+    email: str
+    password: str
+    confirm_password: str
 
 
 class AdminReviewActionRequest(BaseModel):
@@ -310,54 +309,118 @@ def admin_register(
     db: Session = Depends(get_db),
 ):
     admin_name = request.admin_name.strip()
+    email = request.email.strip()
     if not admin_name or len(admin_name) > 100:
         return JSONResponse(
             status_code=400,
             content={"error": "invalid_admin_name"},
         )
-    if request.admin_password != request.confirm_admin_password:
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_email"},
+        )
+    if request.password != request.confirm_password:
         return JSONResponse(
             status_code=400,
             content={"error": "password_mismatch"},
         )
-    if len(request.admin_password) < 8 or len(request.user_password) < 8:
+    if len(request.password) < 8:
         return JSONResponse(
             status_code=400,
             content={"error": "password_too_short"},
         )
 
-    existing = db.scalar(
-        select(User).where(
+    name_matches = db.scalars(
+        select(User)
+        .where(
             (User.admin_name == admin_name) | (User.username == admin_name)
         )
-    )
-    if existing:
+        .order_by(User.created_at.desc())
+    ).all()
+    reusable_admin = None
+    for existing in name_matches:
+        if existing.role != "admin":
+            return JSONResponse(
+                status_code=400,
+                content={"error": "admin_name_exists"},
+            )
+        if existing.admin_status in {"pending", "approved"}:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "admin_name_exists"},
+            )
+        if existing.admin_status == "rejected" and reusable_admin is None:
+            reusable_admin = existing
+
+    email_matches = db.scalars(
+        select(User).where(User.email == email)
+    ).all()
+    rejected_email_admin = None
+    for existing in email_matches:
+        if reusable_admin is not None and existing.id == reusable_admin.id:
+            continue
+        if (
+            existing.role != "admin"
+            or existing.admin_status in {"pending", "approved"}
+        ):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "email_exists"},
+            )
+        if existing.admin_status == "rejected":
+            rejected_email_admin = existing
+
+    if reusable_admin is None:
+        reusable_admin = rejected_email_admin
+    elif (
+        rejected_email_admin is not None
+        and rejected_email_admin.id != reusable_admin.id
+    ):
         return JSONResponse(
             status_code=400,
-            content={"error": "admin_name_exists"},
+            content={"error": "email_exists"},
         )
 
-    admin = User(
-        admin_name=admin_name,
-        username=admin_name,
-        email=f"admin-{uuid4().hex}@local.invalid",
-        admin_password_hash=bcrypt.hashpw(
-            request.admin_password.encode("utf-8"), bcrypt.gensalt()
-        ).decode("utf-8"),
-        user_password_hash=bcrypt.hashpw(
-            request.user_password.encode("utf-8"), bcrypt.gensalt()
-        ).decode("utf-8"),
-        role="admin",
-        admin_status="pending",
-    )
+    password_hash = bcrypt.hashpw(
+        request.password.encode("utf-8"), bcrypt.gensalt()
+    ).decode("utf-8")
+    if reusable_admin is not None:
+        reusable_admin.admin_name = admin_name
+        reusable_admin.username = admin_name
+        reusable_admin.email = email
+        reusable_admin.admin_password_hash = password_hash
+        reusable_admin.admin_status = "pending"
+        reusable_admin.is_banned = False
+        reusable_admin.banned_at = None
+        reusable_admin.ban_reason = None
+        reusable_admin.created_at = datetime.now()
+        admin = reusable_admin
+    else:
+        admin = User(
+            admin_name=admin_name,
+            username=admin_name,
+            email=email,
+            admin_password_hash=password_hash,
+            user_password_hash=None,
+            role="admin",
+            admin_status="pending",
+        )
     try:
         db.add(admin)
         db.commit()
     except IntegrityError:
         db.rollback()
+        name_exists = db.scalar(
+            select(User).where(
+                (User.admin_name == admin_name) | (User.username == admin_name)
+            )
+        )
         return JSONResponse(
             status_code=400,
-            content={"error": "admin_name_exists"},
+            content={
+                "error": "admin_name_exists" if name_exists else "email_exists"
+            },
         )
     except SQLAlchemyError:
         db.rollback()
@@ -413,31 +476,23 @@ def admin_login(
     admin_name = request.admin_name.strip()
     admin = db.scalar(
         select(User).where(
-            (User.admin_name == admin_name) | (User.username == admin_name)
+            User.admin_name == admin_name,
+            User.role == "admin",
         )
     )
-    if not admin or admin.role != "admin":
+    if not admin:
         return JSONResponse(
             status_code=400,
             content={"error": "admin_not_found"},
         )
 
     if not _verify_bcrypt_password(
-        request.admin_password,
+        request.password,
         admin.admin_password_hash,
     ):
         return JSONResponse(
             status_code=400,
-            content={"error": "invalid_admin_password"},
-        )
-
-    if not _verify_bcrypt_password(
-        request.user_password,
-        admin.user_password_hash,
-    ):
-        return JSONResponse(
-            status_code=400,
-            content={"error": "invalid_user_password"},
+            content={"error": "invalid_password"},
         )
 
     if admin.is_banned:
