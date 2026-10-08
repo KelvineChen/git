@@ -1,7 +1,15 @@
+from html import escape
+
 import streamlit as st
 
 from api_client import api_request
 from ui import render_empty_state, render_page_intro
+
+
+GOVERNANCE_ERROR_MESSAGES = {
+    "user_not_found": "用户不存在或已被删除",
+    "protected_account": "管理员账号受保护，不能在用户治理页面操作",
+}
 
 
 def _extract_users(result: object) -> list[dict]:
@@ -63,6 +71,7 @@ def _ban_user_dialog(user_id: int, username: str, token: str) -> None:
                 token=token,
                 json={"reason": reason.strip()},
                 success_message="用户已封禁",
+                error_messages=GOVERNANCE_ERROR_MESSAGES,
             )
         if result is not None:
             st.rerun()
@@ -89,12 +98,12 @@ def _unban_user_dialog(user_id: int, username: str, token: str) -> None:
                 f"/api/admin/users/{user_id}/unban",
                 token=token,
                 success_message="用户已解封",
+                error_messages=GOVERNANCE_ERROR_MESSAGES,
             )
         if result is not None:
             st.rerun()
 
 
-# [TEST-ONLY] 硬删除用户，正式版需移除。
 @st.dialog("删除用户")
 def _delete_user_dialog(user_id: int, username: str, token: str) -> None:
     st.warning(f"此操作将永久删除用户及其项目数据：{username}")
@@ -117,6 +126,7 @@ def _delete_user_dialog(user_id: int, username: str, token: str) -> None:
                 f"/api/admin/users/{user_id}",
                 token=token,
                 success_message="用户已删除",
+                error_messages=GOVERNANCE_ERROR_MESSAGES,
             )
         if result is not None:
             st.rerun()
@@ -214,7 +224,7 @@ if users:
                 )
             with status_col:
                 if is_banned:
-                    reason = user.get("ban_reason") or "未填写原因"
+                    reason = escape(str(user.get("ban_reason") or "未填写原因"))
                     st.markdown(
                         f'<span title="{reason}" style="color:#b42318;'
                         'font-weight:600;">● 已封禁</span>',
@@ -244,7 +254,6 @@ if users:
                 ):
                     _ban_user_dialog(user_id, user_name, admin_token)
             with delete_col:
-                # [TEST-ONLY] 硬删除用户，正式版需移除。
                 if user_id is None:
                     st.button(
                         "删除",

@@ -4,6 +4,12 @@ from api_client import api_request
 from ui import render_empty_state, render_page_intro
 
 
+REVIEW_ERROR_MESSAGES = {
+    "cannot_review_self": "不能审核自己的账号",
+    "admin_not_pending": "该管理员申请已处理，无需重复操作",
+}
+
+
 def _extract_admins(result: object) -> list[dict]:
     if isinstance(result, list):
         return [item for item in result if isinstance(item, dict)]
@@ -45,6 +51,7 @@ def _review_admin(token: str, admin_name: str, action: str) -> bool:
         token=token,
         json={"admin_name": admin_name, "action": action},
         success_message="审核操作成功",
+        error_messages=REVIEW_ERROR_MESSAGES,
     )
     return result is not None
 

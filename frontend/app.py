@@ -146,6 +146,34 @@ def get_api(
     return result
 
 
+def enforce_current_account_status() -> None:
+    """End an existing UI session after the account is banned or deleted."""
+    user_id = st.session_state.get("user_id")
+    if not user_id:
+        return
+    try:
+        response = requests.get(
+            f"{BACKEND_URL}/api/account_status/{user_id}",
+            timeout=5,
+        )
+        response.raise_for_status()
+        result = response.json()
+    except (requests.RequestException, ValueError):
+        return
+    if not isinstance(result, dict) or not result.get("success"):
+        return
+
+    if not result.get("exists", True):
+        st.session_state.clear()
+        st.error("账号不存在或已被删除，请重新注册或联系管理员。")
+        st.stop()
+    if result.get("is_banned"):
+        reason = str(result.get("reason") or "未说明")
+        st.session_state.clear()
+        st.error(f"账号已被封禁，原因：{reason}。如有疑问请联系管理员。")
+        st.stop()
+
+
 def delete_api(path: str, params: dict | None = None) -> dict | None:
     try:
         response = requests.delete(
@@ -1845,6 +1873,7 @@ def main() -> None:
     inject_theme("user" if st.session_state.get("user_id") else "auth")
 
     if st.session_state.get("user_id"):
+        enforce_current_account_status()
         show_authenticated_app()
     else:
         show_auth_page()

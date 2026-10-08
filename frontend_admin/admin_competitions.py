@@ -43,16 +43,15 @@ def _load_competitions(
     return _extract_competitions(result)
 
 
-# [TEST-ONLY] 硬删除竞赛，正式版需移除。
-@st.dialog("删除竞赛")
-def _delete_competition_dialog(
+@st.dialog("删除项目")
+def _delete_project_dialog(
     project_id: int,
     title: str,
     token: str,
 ) -> None:
-    st.warning(f"此操作将永久删除竞赛及其关联数据：{title}")
+    st.warning(f"此操作将永久删除项目及其关联数据：{title}")
     confirmation = st.text_input(
-        "请输入竞赛名称进行确认",
+        "请输入项目名称进行确认",
         key=f"delete_competition_confirmation_{project_id}",
     )
     if st.button(
@@ -62,14 +61,17 @@ def _delete_competition_dialog(
         use_container_width=True,
     ):
         if confirmation.strip() != title:
-            st.error("竞赛名称不一致，无法删除")
+            st.error("项目名称不一致，无法删除")
             return
-        with st.spinner("正在永久删除竞赛..."):
+        with st.spinner("正在永久删除项目..."):
             result = api_request(
                 "DELETE",
                 f"/api/admin/competitions/{project_id}",
                 token=token,
-                success_message="竞赛已删除",
+                success_message="项目已删除",
+                error_messages={
+                    "project_not_found": "项目不存在或已被删除",
+                },
             )
         if result is not None:
             st.rerun()
@@ -89,7 +91,7 @@ st.markdown(
         padding: 0.2rem 0.6rem;
         font-size: 0.82rem;
     }
-    button[aria-label="删除竞赛"],
+    button[aria-label="删除项目"],
     button[aria-label="确认永久删除"] {
         background: #d92d20 !important;
         border-color: #d92d20 !important;
@@ -214,14 +216,13 @@ for project in competitions:
                     if saved is not None:
                         st.rerun()
 
-        # [TEST-ONLY] 硬删除竞赛，正式版需移除。
         if st.button(
-            "删除竞赛",
+            "删除项目",
             key=f"delete_competition_{project_id}",
             type="primary",
             use_container_width=True,
         ):
-            _delete_competition_dialog(
+            _delete_project_dialog(
                 project_id,
                 str(project.get("title") or "未命名项目"),
                 admin_token,

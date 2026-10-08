@@ -10,7 +10,7 @@ import models
 from fastapi import Depends, FastAPI, Header
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -468,6 +468,19 @@ def auth_login(
     }
 
 
+@app.get("/api/account_status/{user_id}")
+def account_status(user_id: int, db: Session = Depends(get_db)):
+    user = db.get(User, user_id)
+    if user is None or user.role != "user":
+        return {"success": True, "exists": False, "is_banned": False}
+    return {
+        "success": True,
+        "exists": True,
+        "is_banned": bool(user.is_banned),
+        "reason": user.ban_reason or "",
+    }
+
+
 @app.post("/api/admin/login")
 def admin_login(
     request: AdminLoginRequest,
@@ -529,13 +542,6 @@ def _require_admin_token(authorization: str | None) -> str | None:
         return "invalid_admin_token"
 
     return None
-
-
-def _admin_user_id(authorization: str | None) -> int | None:
-    if not authorization or not authorization.startswith("Bearer "):
-        return None
-    token = authorization.removeprefix("Bearer ").strip()
-    return ADMIN_TOKENS.get(token)
 
 
 def _admin_auth_response(authorization: str | None) -> JSONResponse | None:
@@ -948,6 +954,11 @@ def admin_review_action(
         )
 
     try:
+        actor_id = ADMIN_TOKENS.get(
+            authorization.removeprefix("Bearer ").strip()
+            if authorization and authorization.startswith("Bearer ")
+            else ""
+        )
         admin = db.scalar(
             select(User).where(
                 User.role == "admin",
@@ -959,6 +970,16 @@ def admin_review_action(
             return JSONResponse(
                 status_code=404,
                 content={"error": "admin_not_found"},
+            )
+        if admin.id == actor_id:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "cannot_review_self"},
+            )
+        if admin.admin_status != "pending":
+            return JSONResponse(
+                status_code=400,
+                content={"error": "admin_not_pending"},
             )
 
         admin.admin_status = "approved" if action == "approve" else "rejected"
@@ -1017,7 +1038,6 @@ def admin_competition_detail(
         return _server_error()
 
 
-# [TEST-ONLY] 硬删除用户，正式版需移除。
 @app.delete("/api/admin/users/{user_id}")
 def admin_delete_user(
     user_id: int,
@@ -1028,18 +1048,17 @@ def admin_delete_user(
     if auth_error:
         return auth_error
 
-    if _admin_user_id(authorization) == user_id:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "cannot_delete_self"},
-        )
-
     try:
         user = db.get(User, user_id)
         if user is None:
             return JSONResponse(
                 status_code=404,
                 content={"error": "user_not_found"},
+            )
+        if user.role != "user":
+            return JSONResponse(
+                status_code=403,
+                content={"error": "protected_account"},
             )
 
         project_ids = list(
@@ -1050,6 +1069,11 @@ def admin_delete_user(
         project_count = len(project_ids)
 
         if project_ids:
+            db.execute(
+                delete(Notification).where(
+                    Notification.related_project_id.in_(project_ids)
+                )
+            )
             db.execute(
                 delete(ProjectProfile).where(
                     ProjectProfile.project_id.in_(project_ids)
@@ -1072,7 +1096,14 @@ def admin_delete_user(
             )
 
         db.execute(delete(UserProfile).where(UserProfile.user_id == user_id))
-        db.execute(delete(Notification).where(Notification.user_id == user_id))
+        db.execute(
+            delete(Notification).where(
+                or_(
+                    Notification.user_id == user_id,
+                    Notification.related_user_id == user_id,
+                )
+            )
+        )
         db.execute(
             delete(FavoriteProject).where(FavoriteProject.user_id == user_id)
         )
@@ -1092,7 +1123,6 @@ def admin_delete_user(
         return _server_error()
 
 
-# [TEST-ONLY] 硬删除竞赛，正式版需移除。
 @app.delete("/api/admin/competitions/{project_id}")
 def admin_delete_competition(
     project_id: int,
@@ -1108,10 +1138,15 @@ def admin_delete_competition(
         if project is None:
             return JSONResponse(
                 status_code=404,
-                content={"error": "competition_not_found"},
+                content={"error": "project_not_found"},
             )
 
         project_name = project.name
+        db.execute(
+            delete(Notification).where(
+                Notification.related_project_id == project_id
+            )
+        )
         db.execute(
             delete(ProjectProfile).where(ProjectProfile.project_id == project_id)
         )
@@ -1155,6 +1190,18 @@ def admin_ban_user(
                 status_code=404,
                 content={"error": "user_not_found"},
             )
+        if user.role != "user":
+            return JSONResponse(
+                status_code=403,
+                content={"error": "protected_account"},
+            )
+
+        if user.is_banned:
+            return {
+                "success": True,
+                "changed": False,
+                "closed_projects": 0,
+            }
 
         user.is_banned = True
         user.banned_at = datetime.now()
@@ -1167,6 +1214,7 @@ def admin_ban_user(
         db.commit()
         return {
             "success": True,
+            "changed": True,
             "closed_projects": len(projects),
         }
     except SQLAlchemyError:
@@ -1191,12 +1239,20 @@ def admin_unban_user(
                 status_code=404,
                 content={"error": "user_not_found"},
             )
+        if user.role != "user":
+            return JSONResponse(
+                status_code=403,
+                content={"error": "protected_account"},
+            )
+
+        if not user.is_banned:
+            return {"success": True, "changed": False}
 
         user.is_banned = False
         user.banned_at = None
         user.ban_reason = None
         db.commit()
-        return {"success": True}
+        return {"success": True, "changed": True}
     except SQLAlchemyError:
         db.rollback()
         return _server_error()
